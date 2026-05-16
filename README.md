@@ -16,9 +16,3 @@ The original world-map `Castle4Ani` is constructed with the `field.castle3` reso
 3. Click `Load unpacked`.
 4. Select this folder: `callofroma-rectorate-sprite-fix`.
 5. Reload the Call of Roma game tab.
-
-When loaded successfully, DevTools console will show:
-
-```text
-[Call of Roma Sprite Fix] World-map city sprite patch applied.
-```

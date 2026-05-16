@@ -1,15 +1,13 @@
 (function patchCallOfRomaRectorateSprite() {
   const PATCH_FLAG = "__callOfRomaRectorateSpriteFixApplied";
   const POLL_INTERVAL_MS = 100;
-  const GIVE_UP_AFTER_MS = 30000;
 
   if (window[PATCH_FLAG]) {
     return;
   }
 
   window[PATCH_FLAG] = {
-    applied: false,
-    startedAt: Date.now()
+    applied: false
   };
 
   function getFieldAniSetManager() {
@@ -93,19 +91,12 @@
     };
 
     window[PATCH_FLAG].applied = true;
-    console.info("[Call of Roma Sprite Fix] World-map city sprite patch applied.");
     return true;
   }
 
   const pollId = window.setInterval(function waitForGameClasses() {
     if (patchWorldMapCitySprites()) {
       window.clearInterval(pollId);
-      return;
-    }
-
-    if (Date.now() - window[PATCH_FLAG].startedAt > GIVE_UP_AFTER_MS) {
-      window.clearInterval(pollId);
-      console.warn("[Call of Roma Sprite Fix] Timed out waiting for game renderer classes.");
     }
   }, POLL_INTERVAL_MS);
 })();
