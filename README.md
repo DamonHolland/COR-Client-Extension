@@ -9,10 +9,10 @@ The original world-map `Castle4Ani` is constructed with the `field.castle3` reso
 - `expandLevel = 3` uses `field.castle4`
 - lower expansion levels keep the original client behavior
 
-## Install
+## Install Unpacked
 
 1. Open Chrome and go to `chrome://extensions`.
 2. Enable `Developer mode`.
 3. Click `Load unpacked`.
-4. Select this folder: `callofroma-rectorate-sprite-fix`.
+4. Select the extension folder, meaning the folder that contains `manifest.json`, `content.js`, and `page-patch.js`.
 5. Reload the Call of Roma game tab.
