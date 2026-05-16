@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Call of Roma Rectorate Sprite Fix",
+  "version": "1.0.0",
+  "description": "Fixes the Call of Roma city sprite tier used for the final Rectorate expansion.",
+  "action": {
+    "default_title": "Call of Roma Rectorate Sprite Fix"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://callofroma.com/*",
+        "https://*.callofroma.com/*",
+        "http://callofroma.com/*",
+        "http://*.callofroma.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "page-patch.js"
+      ],
+      "matches": [
+        "https://callofroma.com/*",
+        "https://*.callofroma.com/*",
+        "http://callofroma.com/*",
+        "http://*.callofroma.com/*"
+      ]
+    }
+  ]
+}
