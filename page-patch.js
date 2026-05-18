@@ -10,8 +10,52 @@
     arenaCleanup: false,
     cityHeroSelection: false,
     citySprites: false,
-    lastSelectedCityId: null
+    externalRechargeAd: false,
+    lastSelectedCityId: null,
+    newsPopup: false,
+    questCountRefresh: false,
+    questPopup: false,
+    rechargeSidebar: false
   };
+
+  function removeExternalRechargeAd() {
+    let removed = false;
+    const sidebar = document.getElementById("left");
+    const sidebarToggle = document.querySelector(".cen");
+
+    if (sidebar && sidebar.classList && sidebar.classList.contains("left")) {
+      sidebar.remove();
+      removed = true;
+    }
+
+    if (
+      sidebarToggle
+      && (
+        sidebarToggle.querySelector("#cen1")
+        || sidebarToggle.querySelector("#cen2")
+      )
+    ) {
+      sidebarToggle.remove();
+      removed = true;
+    }
+
+    return removed;
+  }
+
+  removeExternalRechargeAd();
+
+  const externalRechargeObserver = new MutationObserver(function removeInjectedRechargeAd() {
+    if (removeExternalRechargeAd()) {
+      window[PATCH_FLAG].externalRechargeAd = true;
+    }
+  });
+
+  if (document.documentElement) {
+    externalRechargeObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true
+    });
+  }
 
   function getFieldAniSetManager() {
     return window.animation
@@ -177,6 +221,28 @@
       && window.roma.logic.object
       && window.roma.logic.object.player
       && window.roma.logic.object.player.PlayerObj;
+  }
+
+  function getCastleFrame() {
+    return window.views
+      && window.views.mainFrame
+      && window.views.mainFrame.CastleFrame;
+  }
+
+  function getMainContainer() {
+    return window.MainContainer;
+  }
+
+  function getRollTextBar() {
+    return window.RollTextBar;
+  }
+
+  function getTaskManager() {
+    return window.roma
+      && window.roma.logic
+      && window.roma.logic.object
+      && window.roma.logic.object.task
+      && window.roma.logic.object.task.TaskManager;
   }
 
   function getPlayerObj() {
@@ -710,12 +776,315 @@
     return true;
   }
 
+  function hideQuestPopupOnFrame(frame) {
+    if (!frame) {
+      return;
+    }
+
+    if (frame.newTaskMc) {
+      frame.newTaskMc.visible = false;
+
+      if (typeof frame.newTaskMc.gotoAndStop === "function") {
+        frame.newTaskMc.gotoAndStop(1);
+      }
+
+      if (frame.newTaskMc.r) {
+        frame.newTaskMc.r.visible = false;
+      }
+    }
+  }
+
+  function patchCompletedQuestPopup() {
+    const CastleFrame = getCastleFrame();
+
+    if (!CastleFrame || !CastleFrame.prototype) {
+      return false;
+    }
+
+    const framePrototype = CastleFrame.prototype;
+
+    if (!framePrototype.__callOfRomaQuestPopupOriginalAddNewTaskBtn) {
+      const originalAddNewTaskBtn = framePrototype.addNewTaskBtn;
+
+      if (typeof originalAddNewTaskBtn !== "function") {
+        return false;
+      }
+
+      framePrototype.__callOfRomaQuestPopupOriginalAddNewTaskBtn = originalAddNewTaskBtn;
+      framePrototype.addNewTaskBtn = function addNewTaskBtnWithoutFlashingPopup() {
+        const result = originalAddNewTaskBtn.apply(this, arguments);
+        hideQuestPopupOnFrame(this);
+        return result;
+      };
+    }
+
+    if (!framePrototype.__callOfRomaQuestPopupOriginalNewTaskHandle) {
+      const originalNewTaskHandle = framePrototype.newTaskHandle;
+
+      if (typeof originalNewTaskHandle !== "function") {
+        return false;
+      }
+
+      framePrototype.__callOfRomaQuestPopupOriginalNewTaskHandle = originalNewTaskHandle;
+      framePrototype.newTaskHandle = function newTaskHandleWithoutFlashingPopup() {
+        const result = originalNewTaskHandle.apply(this, arguments);
+        hideQuestPopupOnFrame(this);
+        return result;
+      };
+    }
+
+    hideQuestPopupOnFrame(CastleFrame.instance);
+    window[PATCH_FLAG].questPopup = true;
+    return true;
+  }
+
+  function getNewsPopupClosedY(container) {
+    const chatPanelY = Number(container && container.ChatPanel && container.ChatPanel.y);
+    const currentY = Number(container && container.rollTextBar && container.rollTextBar.y);
+
+    if (Number.isFinite(chatPanelY) && chatPanelY > 100) {
+      return chatPanelY - 6;
+    }
+
+    if (Number.isFinite(currentY) && currentY > 100) {
+      return currentY;
+    }
+
+    return 402;
+  }
+
+  function closeNewsPopupOnMainContainer(container) {
+    if (!container || !container.rollTextBar) {
+      return;
+    }
+
+    container.rollTextBarIsHide = true;
+    container.rollTextBar.isShow = false;
+    container.rollTextBar.y = getNewsPopupClosedY(container);
+
+    if (container.rollTextBar.showRollTextBtn) {
+      container.rollTextBar.showRollTextBtn.visible = true;
+    }
+
+    if (container.rollTextBar.hideRollTextBtn) {
+      container.rollTextBar.hideRollTextBtn.visible = false;
+    }
+  }
+
+  function patchNewsPopupDefaultClosed() {
+    const MainContainer = getMainContainer();
+    const RollTextBar = getRollTextBar();
+
+    if (
+      !MainContainer
+      || !MainContainer.prototype
+      || !RollTextBar
+      || !RollTextBar.prototype
+    ) {
+      return false;
+    }
+
+    const mainPrototype = MainContainer.prototype;
+    const rollPrototype = RollTextBar.prototype;
+
+    if (!mainPrototype.__callOfRomaNewsPopupOriginalInit) {
+      const originalInit = mainPrototype.init;
+
+      if (typeof originalInit !== "function") {
+        return false;
+      }
+
+      mainPrototype.__callOfRomaNewsPopupOriginalInit = originalInit;
+      mainPrototype.init = function initWithNewsPopupClosed() {
+        const result = originalInit.apply(this, arguments);
+        closeNewsPopupOnMainContainer(this);
+        window.setTimeout(closeNewsPopupOnMainContainer, 0, this);
+        window.setTimeout(closeNewsPopupOnMainContainer, 500, this);
+        return result;
+      };
+    }
+
+    if (!rollPrototype.__callOfRomaNewsPopupOriginalInit) {
+      const originalRollInit = rollPrototype.init;
+
+      if (typeof originalRollInit !== "function") {
+        return false;
+      }
+
+      rollPrototype.__callOfRomaNewsPopupOriginalInit = originalRollInit;
+      rollPrototype.init = function initRollTextBarClosed() {
+        const result = originalRollInit.apply(this, arguments);
+        this.isShow = false;
+
+        if (this.showRollTextBtn) {
+          this.showRollTextBtn.visible = true;
+        }
+
+        if (this.hideRollTextBtn) {
+          this.hideRollTextBtn.visible = false;
+        }
+
+        return result;
+      };
+    }
+
+    closeNewsPopupOnMainContainer(MainContainer.instance);
+    window[PATCH_FLAG].newsPopup = true;
+    return true;
+  }
+
+  function closeRechargeSidebarOnButtonBar(buttonBar) {
+    if (!buttonBar || !buttonBar.showPayButton) {
+      return;
+    }
+
+    buttonBar.showPayButton.width = 0;
+    buttonBar.showPayButton.visible = false;
+    buttonBar.showPayButton.includeInLayout = false;
+    buttonBar.showPayButton.touchEnabled = false;
+    buttonBar.showPayButton.touchChildren = false;
+
+    if (buttonBar.addCoinMc) {
+      buttonBar.addCoinMc.visible = false;
+
+      if (typeof buttonBar.addCoinMc.gotoAndStop === "function") {
+        buttonBar.addCoinMc.gotoAndStop(1);
+      }
+    }
+  }
+
+  function patchRechargeSidebarDefaultClosed() {
+    const ButtonBar = getButtonBar();
+
+    if (!ButtonBar || !ButtonBar.prototype) {
+      return false;
+    }
+
+    const buttonPrototype = ButtonBar.prototype;
+
+    if (!buttonPrototype.__callOfRomaRechargeSidebarOriginalShowPay) {
+      const originalShowPay = buttonPrototype.showPay;
+
+      buttonPrototype.__callOfRomaRechargeSidebarOriginalShowPay = originalShowPay;
+      buttonPrototype.showPay = function showPayWithRechargeSidebarClosed() {
+        if (typeof originalShowPay === "function") {
+          originalShowPay.apply(this, arguments);
+        }
+
+        closeRechargeSidebarOnButtonBar(this);
+      };
+    }
+
+    if (!buttonPrototype.__callOfRomaRechargeSidebarOriginalInit) {
+      const originalInit = buttonPrototype.init;
+
+      if (typeof originalInit !== "function") {
+        return false;
+      }
+
+      buttonPrototype.__callOfRomaRechargeSidebarOriginalInit = originalInit;
+      buttonPrototype.init = function initWithRechargeSidebarClosed() {
+        const result = originalInit.apply(this, arguments);
+        closeRechargeSidebarOnButtonBar(this);
+        return result;
+      };
+    }
+
+    if (!buttonPrototype.__callOfRomaRechargeSidebarOriginalAddAddCionBtn) {
+      const originalAddAddCionBtn = buttonPrototype.addAddCionBtn;
+
+      if (typeof originalAddAddCionBtn !== "function") {
+        return false;
+      }
+
+      buttonPrototype.__callOfRomaRechargeSidebarOriginalAddAddCionBtn = originalAddAddCionBtn;
+      buttonPrototype.addAddCionBtn = function addAddCionBtnWithRechargeSidebarClosed() {
+        const result = originalAddAddCionBtn.apply(this, arguments);
+        closeRechargeSidebarOnButtonBar(this);
+        return result;
+      };
+    }
+
+    window[PATCH_FLAG].rechargeSidebar = true;
+    return true;
+  }
+
+  function refreshQuestCountSoon() {
+    const TaskManager = getTaskManager();
+
+    if (
+      !TaskManager
+      || !TaskManager.instance
+      || typeof TaskManager.instance.getFinishedQuestCount !== "function"
+    ) {
+      return false;
+    }
+
+    window.setTimeout(function refreshQuestCountAfterLaunch() {
+      TaskManager.instance.getFinishedQuestCount();
+    }, 0);
+    window.setTimeout(function refreshQuestCountAfterUiSettles() {
+      TaskManager.instance.getFinishedQuestCount();
+    }, 1500);
+
+    return true;
+  }
+
+  function patchQuestCountLaunchRefresh() {
+    const ButtonBar = getButtonBar();
+    const TaskManager = getTaskManager();
+
+    if (
+      !ButtonBar
+      || !ButtonBar.prototype
+      || !TaskManager
+      || !TaskManager.instance
+    ) {
+      return false;
+    }
+
+    const buttonPrototype = ButtonBar.prototype;
+
+    if (!buttonPrototype.__callOfRomaQuestCountOriginalInit) {
+      const originalInit = buttonPrototype.init;
+
+      if (typeof originalInit !== "function") {
+        return false;
+      }
+
+      buttonPrototype.__callOfRomaQuestCountOriginalInit = originalInit;
+      buttonPrototype.init = function initWithLaunchQuestCountRefresh() {
+        const result = originalInit.apply(this, arguments);
+        refreshQuestCountSoon();
+        return result;
+      };
+    }
+
+    refreshQuestCountSoon();
+    window[PATCH_FLAG].questCountRefresh = true;
+    return true;
+  }
+
   const pollId = window.setInterval(function waitForGameClasses() {
+    removeExternalRechargeAd();
+
     const citySpritesPatched = patchWorldMapCitySprites();
     const arenaCleanupPatched = patchArenaReminderCleanup();
     const cityHeroSelectionPatched = patchCampaignCityHeroSelection();
+    const newsPopupPatched = patchNewsPopupDefaultClosed();
+    const questCountRefreshPatched = patchQuestCountLaunchRefresh();
+    const questPopupPatched = patchCompletedQuestPopup();
+    const rechargeSidebarPatched = patchRechargeSidebarDefaultClosed();
 
-    if (citySpritesPatched && arenaCleanupPatched && cityHeroSelectionPatched) {
+    if (
+      citySpritesPatched
+      && arenaCleanupPatched
+      && cityHeroSelectionPatched
+      && newsPopupPatched
+      && questCountRefreshPatched
+      && questPopupPatched
+      && rechargeSidebarPatched
+    ) {
       window.clearInterval(pollId);
     }
   }, POLL_INTERVAL_MS);
