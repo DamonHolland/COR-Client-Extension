@@ -11,6 +11,7 @@
     cityHeroSelection: false,
     citySprites: false,
     externalRechargeAd: false,
+    heroTroopCapacity: false,
     lastSelectedCityId: null,
     newsPopup: false,
     questCountRefresh: false,
@@ -221,6 +222,14 @@
       && window.roma.logic.object
       && window.roma.logic.object.player
       && window.roma.logic.object.player.PlayerObj;
+  }
+
+  function getHeroObjClass() {
+    return window.roma
+      && window.roma.logic
+      && window.roma.logic.object
+      && window.roma.logic.object.hero
+      && window.roma.logic.object.hero.HeroObj;
   }
 
   function getCastleFrame() {
@@ -1051,6 +1060,35 @@
     return true;
   }
 
+  function patchHeroTroopDisplayedCapacity() {
+    const HeroObj = getHeroObjClass();
+
+    if (!HeroObj || !HeroObj.prototype) {
+      return false;
+    }
+
+    const heroPrototype = HeroObj.prototype;
+
+    if (!heroPrototype.__callOfRomaHeroTroopCapacityOriginalAfterBuffUpdate) {
+      const originalAfterBuffUpdate = heroPrototype.afterBuffUpdate;
+
+      if (typeof originalAfterBuffUpdate !== "function") {
+        return false;
+      }
+
+      heroPrototype.__callOfRomaHeroTroopCapacityOriginalAfterBuffUpdate = originalAfterBuffUpdate;
+      heroPrototype.afterBuffUpdate = function afterBuffUpdateWithServerCapacity() {
+        const result = originalAfterBuffUpdate.apply(this, arguments);
+        this.leadership = Math.max(0, toInt(this.leadership) - 1);
+        this.tempLeadership = Math.max(0, toInt(this.tempLeadership) - 1);
+        return result;
+      };
+    }
+
+    window[PATCH_FLAG].heroTroopCapacity = true;
+    return true;
+  }
+
   const pollId = window.setInterval(function waitForGameClasses() {
     removeExternalRechargeAd();
 
@@ -1061,11 +1099,13 @@
     const questCountRefreshPatched = patchQuestCountLaunchRefresh();
     const questPopupPatched = patchCompletedQuestPopup();
     const rechargeSidebarPatched = patchRechargeSidebarDefaultClosed();
+    const heroTroopCapacityPatched = patchHeroTroopDisplayedCapacity();
 
     if (
       citySpritesPatched
       && arenaCleanupPatched
       && cityHeroSelectionPatched
+      && heroTroopCapacityPatched
       && newsPopupPatched
       && questCountRefreshPatched
       && questPopupPatched

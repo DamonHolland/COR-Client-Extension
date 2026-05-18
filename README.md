@@ -25,6 +25,13 @@ When opening the attack/campaign hero picker from the world map immediately afte
 - attacking from the world map uses the newly selected city's free heroes
 - the campaign city dropdown is kept in sync with the corrected source city
 
+### Hero Troop Capacity Display
+
+The server rejects troop transfers that exactly fill a hero's displayed Faculty value. This extension treats the server-compatible capacity as one lower when hero Faculty is calculated, so the visible value and troop-transfer limits match the server's rule.
+
+- hero Faculty/capacity displays one less than the original client calculation
+- troop transfer limits use the same adjusted value shown in the UI
+
 ### Completed Quest Popup Suppression
 
 The original client shows a flashing completed-quest animation whenever rewards are available. This extension keeps that popup and its invisible click target hidden, while leaving quest completion state and the normal Task window available.
