@@ -18,6 +18,13 @@ The original client clears expired countdown labels but can leave stale returnin
 - returned heroes no longer remain as expired entries in the Army Action list
 - expired arena battle entries no longer keep the Intelligence reminder count alive
 
+### Campaign Hero City Selection
+
+When opening the attack/campaign hero picker from the world map immediately after switching cities, the original client can rebuild the free-hero list from the previous current city. This extension remembers the last city selected through the world-map city controls and forces campaign mode to use that city when building the hero list.
+
+- attacking from the world map uses the newly selected city's free heroes
+- the campaign city dropdown is kept in sync with the corrected source city
+
 ## Install Unpacked
 
 1. Open Chrome and go to `chrome://extensions`.
