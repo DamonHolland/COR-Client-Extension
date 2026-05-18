@@ -492,17 +492,22 @@
       && playerObj.getCastleObjById(normalizedCityId);
   }
 
+  function getCurrentCastle() {
+    const playerObj = getPlayerObj();
+
+    return playerObj
+      && typeof playerObj.getCurCastleObj === "function"
+      && playerObj.getCurCastleObj();
+  }
+
   function getRememberedCampaignCastle() {
     const helper = getHeroHelper();
-    const playerObj = getPlayerObj();
     const helperCastle = helper && helper.curSelectCastle;
     const rememberedCastle = getCastleByCityId(window[PATCH_FLAG].lastSelectedCityId);
 
     return rememberedCastle
-      || helperCastle
-      || (playerObj
-        && typeof playerObj.getCurCastleObj === "function"
-        && playerObj.getCurCastleObj());
+      || getCurrentCastle()
+      || helperCastle;
   }
 
   function setCampaignCastleOnHelper() {
@@ -634,7 +639,6 @@
     const CastleIconPanel = getCastleIconPanel();
     const CastleObj = getCastleObjClass();
     const PlayerObj = getPlayerObjClass();
-    const MapFieldInfoWin = getMapFieldInfoWin();
     const HerosMansionWin = getHerosMansionWin();
 
     if (
@@ -644,8 +648,6 @@
       || !CastleObj.prototype
       || !PlayerObj
       || !PlayerObj.prototype
-      || !MapFieldInfoWin
-      || !MapFieldInfoWin.prototype
       || !HerosMansionWin
       || !HerosMansionWin.prototype
     ) {
@@ -655,7 +657,6 @@
     const castleIconPrototype = CastleIconPanel.prototype;
     const castlePrototype = CastleObj.prototype;
     const playerPrototype = PlayerObj.prototype;
-    const mapFieldInfoPrototype = MapFieldInfoWin.prototype;
     const mansionPrototype = HerosMansionWin.prototype;
 
     if (!castleIconPrototype.__callOfRomaCityHeroOriginalOnUiClick) {
@@ -726,36 +727,6 @@
       };
     }
 
-    if (!mapFieldInfoPrototype.__callOfRomaCityHeroOriginalCreateArmy) {
-      const originalCreateArmy = mapFieldInfoPrototype.createArmy;
-
-      if (typeof originalCreateArmy !== "function") {
-        return false;
-      }
-
-      mapFieldInfoPrototype.__callOfRomaCityHeroOriginalCreateArmy = originalCreateArmy;
-      mapFieldInfoPrototype.createArmy = function createArmyWithRememberedSourceCastle() {
-        setCampaignCastleOnHelper();
-        return originalCreateArmy.apply(this, arguments);
-      };
-    }
-
-    if (!mansionPrototype.__callOfRomaCityHeroOriginalRefresh) {
-      const originalRefresh = mansionPrototype.refresh;
-
-      if (typeof originalRefresh !== "function") {
-        return false;
-      }
-
-      mansionPrototype.__callOfRomaCityHeroOriginalRefresh = originalRefresh;
-      mansionPrototype.refresh = function refreshWithRememberedCampaignCastle() {
-        setCampaignCastleOnHelper();
-        const result = originalRefresh.apply(this, arguments);
-        repairCampaignHeroList(this);
-        return result;
-      };
-    }
-
     if (!mansionPrototype.__callOfRomaCityHeroOriginalGotoTargetWin) {
       const originalGotoTargetWin = mansionPrototype.gotoTargetWin;
 
@@ -764,10 +735,25 @@
       }
 
       mansionPrototype.__callOfRomaCityHeroOriginalGotoTargetWin = originalGotoTargetWin;
-      mansionPrototype.gotoTargetWin = function gotoTargetWinWithRememberedCampaignCastle(targetWin) {
-        setCampaignCastleOnHelper();
+      mansionPrototype.gotoTargetWin = function gotoTargetWinWithSafeCampaignRepair(targetWin) {
         const result = originalGotoTargetWin.apply(this, arguments);
-        repairCampaignHeroList(this);
+
+        try {
+          const helper = getHeroHelper();
+
+          if (
+            helper
+            && helper.targetMapTileData
+            && HerosMansionWin
+            && targetWin === HerosMansionWin.WINDOW_SHOW_CAMPAIGN
+          ) {
+            setCampaignCastleOnHelper();
+            repairCampaignHeroList(this);
+          }
+        } catch (error) {
+          console.warn("Call of Roma campaign city repair skipped", error);
+        }
+
         return result;
       };
     }
