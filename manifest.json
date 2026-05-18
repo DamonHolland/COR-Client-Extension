@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Call of Roma Rectorate Sprite Fix",
-  "version": "1.0.0",
-  "description": "Fixes the Call of Roma city sprite tier used for the final Rectorate expansion.",
+  "name": "Call of Roma Client Fixes",
+  "version": "1.1.0",
+  "description": "Fixes Call of Roma city sprites and stale arena/intelligence reminders.",
   "action": {
-    "default_title": "Call of Roma Rectorate Sprite Fix"
+    "default_title": "Call of Roma Client Fixes"
   },
   "content_scripts": [
     {
