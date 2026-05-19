@@ -16,8 +16,12 @@
     newsPopup: false,
     questCountRefresh: false,
     questPopup: false,
-    rechargeSidebar: false
+    rechargeSidebar: false,
+    serverWildClearingFix: false,
+    worldMapClickDebug: false
   };
+
+  const mapClickDebugLevels = Object.create(null);
 
   function removeExternalRechargeAd() {
     let removed = false;
@@ -206,6 +210,448 @@
       && window.views.mainModules
       && window.views.mainModules.map
       && window.views.mainModules.map.MapFieldInfoWin;
+  }
+
+  function getFieldConstant() {
+    return window.roma
+      && window.roma.common
+      && window.roma.common.constants
+      && window.roma.common.constants.FieldConstant;
+  }
+
+  function getDiamondWorldMap2Class() {
+    return window.views
+      && window.views.mainModules
+      && window.views.mainModules.map
+      && window.views.mainModules.map.diamond2
+      && window.views.mainModules.map.diamond2.DiamondWorldMap2;
+  }
+
+  function getDiamondMapTile2Class() {
+    return window.views
+      && window.views.mainModules
+      && window.views.mainModules.map
+      && window.views.mainModules.map.diamond2
+      && window.views.mainModules.map.diamond2.DiamondMapTile2;
+  }
+
+  function getMapDataByteArrayClass() {
+    return window.views
+      && window.views.mainModules
+      && window.views.mainModules.map
+      && window.views.mainModules.map.diamond2
+      && window.views.mainModules.map.diamond2.MapDataByteArray;
+  }
+
+  function getTileHelperClass() {
+    return window.views
+      && window.views.mainModules
+      && window.views.mainModules.map
+      && window.views.mainModules.map.diamond2
+      && window.views.mainModules.map.diamond2.TileHelper;
+  }
+
+  function wrapMapCoordinate(value) {
+    const FieldConstant = getFieldConstant();
+    const mapSize = FieldConstant && toInt(FieldConstant.MAP_SIZE);
+
+    if (!mapSize) {
+      return toInt(value);
+    }
+
+    const wrapped = toInt(value) % mapSize;
+    return wrapped < 0 ? wrapped + mapSize : wrapped;
+  }
+
+  function getMapClickDebugLevelKey(fieldX, fieldY) {
+    return `${wrapMapCoordinate(fieldX)},${wrapMapCoordinate(fieldY)}`;
+  }
+
+  function setMapClickDebugLevel(fieldX, fieldY, level) {
+    mapClickDebugLevels[getMapClickDebugLevelKey(fieldX, fieldY)] = Math.max(0, toInt(level));
+  }
+
+  function getMapClickDebugLevel(fieldX, fieldY) {
+    return mapClickDebugLevels[getMapClickDebugLevelKey(fieldX, fieldY)];
+  }
+
+  function getFieldTypeFamily(fieldType) {
+    const FieldConstant = getFieldConstant();
+    const type = toInt(fieldType);
+
+    if (!FieldConstant) {
+      return String(type);
+    }
+
+    if (type === FieldConstant.FLAT_TYPE) {
+      return "flat";
+    }
+
+    if (type >= FieldConstant.TYPE_TREES && type < FieldConstant.DESERT_TYPE) {
+      return "forest";
+    }
+
+    if (type >= FieldConstant.DESERT_TYPE && type < FieldConstant.HILL_TYPE) {
+      return "desert";
+    }
+
+    if (type >= FieldConstant.HILL_TYPE && type < FieldConstant.LAKE_TYPE) {
+      return "hill";
+    }
+
+    if (type >= FieldConstant.LAKE_TYPE && type < FieldConstant.TYPE_NPC_FIELD) {
+      return "lake";
+    }
+
+    if (type === FieldConstant.TYPE_NPC_FIELD) {
+      return "npc";
+    }
+
+    if (type === FieldConstant.TYPE_CITY) {
+      return "city";
+    }
+
+    return String(type);
+  }
+
+  function readRawMapFieldType(mapData, fieldX, fieldY) {
+    if (!mapData || typeof mapData.getFieldType !== "function") {
+      return {
+        value: null,
+        error: "MapDataByteArray.getFieldType is unavailable"
+      };
+    }
+
+    try {
+      return {
+        value: toInt(mapData.getFieldType(wrapMapCoordinate(fieldX), wrapMapCoordinate(fieldY))),
+        error: null
+      };
+    } catch (error) {
+      return {
+        value: null,
+        error: error && error.message ? error.message : String(error)
+      };
+    }
+  }
+
+  function readMapCastleFlag(mapData, fieldX, fieldY) {
+    if (!mapData || typeof mapData.isCastle !== "function") {
+      return {
+        value: null,
+        error: "MapDataByteArray.isCastle is unavailable"
+      };
+    }
+
+    try {
+      return {
+        value: Boolean(mapData.isCastle(wrapMapCoordinate(fieldX), wrapMapCoordinate(fieldY))),
+        error: null
+      };
+    } catch (error) {
+      return {
+        value: null,
+        error: error && error.message ? error.message : String(error)
+      };
+    }
+  }
+
+  function describeCachedMapTileValue(value) {
+    if (value === undefined) {
+      return {
+        cacheState: "undefined"
+      };
+    }
+
+    if (value === null) {
+      return {
+        cacheState: "null-clearing"
+      };
+    }
+
+    if (value === true) {
+      return {
+        cacheState: "true-cached-clearing"
+      };
+    }
+
+    return {
+      cacheState: "tile",
+      fieldX: value && typeof value.getFieldX === "function" ? value.getFieldX() : value && value.fieldX,
+      fieldY: value && typeof value.getFieldY === "function" ? value.getFieldY() : value && value.fieldY,
+      idField: value && value.idField,
+      fieldType: value && typeof value.getFieldType === "function" ? value.getFieldType() : value && value.fieldType,
+      fieldTypeFamily: value ? getFieldTypeFamily(typeof value.getFieldType === "function" ? value.getFieldType() : value.fieldType) : null,
+      fieldLevel: value && typeof value.getFieldLevel === "function" ? value.getFieldLevel() : value && value.fieldLevel,
+      hasFieldPlayer: Boolean(value && value.fieldPlayer),
+      isInBattle: Boolean(value && value.isInBattle),
+      isCastle: Boolean(value && (typeof value.isCastle === "function" ? value.isCastle() : value.fieldType === 15))
+    };
+  }
+
+  function readCachedMapTile(mapData, fieldX, fieldY) {
+    const x = wrapMapCoordinate(fieldX);
+    const y = wrapMapCoordinate(fieldY);
+
+    if (!mapData || !mapData.mapArray || !mapData.mapArray[x]) {
+      return describeCachedMapTileValue(undefined);
+    }
+
+    return describeCachedMapTileValue(mapData.mapArray[x][y]);
+  }
+
+  function setCachedMapTile(mapData, fieldX, fieldY, value) {
+    const x = wrapMapCoordinate(fieldX);
+    const y = wrapMapCoordinate(fieldY);
+
+    if (mapData && mapData.mapArray && mapData.mapArray[x]) {
+      mapData.mapArray[x][y] = value;
+    }
+  }
+
+  function createFunctionalServerWildTile(fieldX, fieldY, level) {
+    const FieldConstant = getFieldConstant();
+    const DiamondMapTile2 = getDiamondMapTile2Class();
+
+    if (!FieldConstant || !DiamondMapTile2) {
+      return null;
+    }
+
+    // Lake tiles are functional wilds without forcing an extra overlay sprite.
+    const tile = new DiamondMapTile2(
+      wrapMapCoordinate(fieldX),
+      wrapMapCoordinate(fieldY),
+      FieldConstant.LAKE_TYPE
+    );
+
+    if (typeof tile.setLevelData === "function") {
+      tile.setLevelData(level);
+    } else {
+      tile.fieldLevel = level;
+    }
+
+    tile.__callOfRomaServerWildClearingFix = true;
+    return tile;
+  }
+
+  function correctServerWildClearingTile(mapData, fieldX, fieldY, tile) {
+    const serverLevel = getMapClickDebugLevel(fieldX, fieldY);
+
+    if (serverLevel === undefined || serverLevel <= 0 || tile !== null) {
+      return tile;
+    }
+
+    const fixedTile = createFunctionalServerWildTile(fieldX, fieldY, serverLevel);
+
+    if (!fixedTile) {
+      return tile;
+    }
+
+    setCachedMapTile(mapData, fieldX, fieldY, fixedTile);
+    return fixedTile;
+  }
+
+  function cacheMapClickDebugLevels(response) {
+    const FieldConstant = getFieldConstant();
+
+    if (
+      !FieldConstant
+      || !response
+      || typeof response.mapStr !== "string"
+    ) {
+      return;
+    }
+
+    const viewRadius = toInt(FieldConstant.CLIENT_VIEW_RADIUS);
+    const halfRadius = Math.floor(viewRadius / 2);
+    let mapStringIndex = 0;
+
+    for (let row = 0; row < viewRadius; row += 1) {
+      let rowRadius = row;
+
+      if (rowRadius > halfRadius) {
+        rowRadius = viewRadius - row - 1;
+      }
+
+      const fieldY = toInt(response.y) - halfRadius + row;
+
+      for (let offset = -rowRadius; offset <= rowRadius; offset += 1) {
+        const levelCode = response.mapStr.charCodeAt(mapStringIndex) - 48;
+        mapStringIndex += 1;
+
+        if (Number.isFinite(levelCode)) {
+          setMapClickDebugLevel(toInt(response.x) + offset, fieldY, levelCode);
+        }
+      }
+    }
+  }
+
+  function getMapClickCoordinate(worldMap, event) {
+    const TileHelper = getTileHelperClass();
+
+    if (
+      !TileHelper
+      || typeof TileHelper.calc !== "function"
+      || !worldMap
+      || !worldMap.mapUIContainer
+    ) {
+      return null;
+    }
+
+    let contentMouseX = worldMap.contentMouseX;
+    let contentMouseY = worldMap.contentMouseY;
+
+    if (event && typeof worldMap.globalToLocal === "function") {
+      const localPoint = worldMap.globalToLocal(event.stageX, event.stageY);
+      contentMouseX = localPoint.x;
+      contentMouseY = localPoint.y;
+    }
+
+    const helper = TileHelper.calc(worldMap.mapUIContainer, contentMouseX, contentMouseY);
+
+    if (!helper || helper.mouseInContext === false) {
+      return null;
+    }
+
+    return {
+      fieldX: wrapMapCoordinate(helper.fieldX),
+      fieldY: wrapMapCoordinate(helper.fieldY),
+      idField: wrapMapCoordinate(helper.fieldX) * 10000 + wrapMapCoordinate(helper.fieldY),
+      contentMouseX,
+      contentMouseY
+    };
+  }
+
+  function getMapClickDebugPayload(worldMap, event, phase) {
+    const MapDataByteArray = getMapDataByteArrayClass();
+    const mapData = MapDataByteArray && MapDataByteArray.instance;
+    const coordinate = getMapClickCoordinate(worldMap, event);
+
+    if (!coordinate) {
+      return {
+        phase,
+        coordinate: null,
+        reason: "TileHelper could not resolve this click"
+      };
+    }
+
+    const rawFieldType = readRawMapFieldType(mapData, coordinate.fieldX, coordinate.fieldY);
+    const transposedFieldType = readRawMapFieldType(mapData, coordinate.fieldY, coordinate.fieldX);
+    const castleFlag = readMapCastleFlag(mapData, coordinate.fieldX, coordinate.fieldY);
+
+    return {
+      phase,
+      coordinate,
+      serverMapLevel: getMapClickDebugLevel(coordinate.fieldX, coordinate.fieldY),
+      rawFieldType: rawFieldType.value,
+      rawFieldTypeFamily: rawFieldType.value === null ? null : getFieldTypeFamily(rawFieldType.value),
+      rawFieldTypeError: rawFieldType.error,
+      transposedFieldType: transposedFieldType.value,
+      transposedFieldTypeFamily: transposedFieldType.value === null ? null : getFieldTypeFamily(transposedFieldType.value),
+      transposedFieldTypeError: transposedFieldType.error,
+      isCastleBit: castleFlag.value,
+      isCastleBitError: castleFlag.error,
+      cachedTile: readCachedMapTile(mapData, coordinate.fieldX, coordinate.fieldY),
+      mapContainer: worldMap && worldMap.mapUIContainer
+        ? {
+          x: worldMap.mapUIContainer.x,
+          y: worldMap.mapUIContainer.y
+        }
+        : null,
+      targetField: worldMap && worldMap.targetField
+    };
+  }
+
+  function logMapClickDebug(payload) {
+    console.log("[Call of Roma tile click debug]", payload);
+
+    try {
+      console.log("[Call of Roma tile click debug JSON]", JSON.stringify(payload));
+    } catch (error) {
+      console.warn("Call of Roma tile click debug JSON failed", error);
+    }
+  }
+
+  function patchWorldMapClickDebugLogger() {
+    const DiamondWorldMap2 = getDiamondWorldMap2Class();
+    const MapDataByteArray = getMapDataByteArrayClass();
+    const TileHelper = getTileHelperClass();
+
+    if (
+      !DiamondWorldMap2
+      || !DiamondWorldMap2.prototype
+      || !MapDataByteArray
+      || !TileHelper
+    ) {
+      return false;
+    }
+
+    const worldMapPrototype = DiamondWorldMap2.prototype;
+
+    if (!worldMapPrototype.__callOfRomaClickDebugOriginalOnServerResponse) {
+      const originalOnServerResponse = worldMapPrototype.onServerResponse;
+
+      if (typeof originalOnServerResponse !== "function") {
+        return false;
+      }
+
+      worldMapPrototype.__callOfRomaClickDebugOriginalOnServerResponse = originalOnServerResponse;
+      worldMapPrototype.onServerResponse = function onServerResponseWithClickDebugLevelCache(response) {
+        cacheMapClickDebugLevels(response);
+        return originalOnServerResponse.apply(this, arguments);
+      };
+    }
+
+    if (!worldMapPrototype.__callOfRomaClickDebugOriginalOnMapClick) {
+      const originalOnMapClick = worldMapPrototype.onMapClick;
+
+      if (typeof originalOnMapClick !== "function") {
+        return false;
+      }
+
+      worldMapPrototype.__callOfRomaClickDebugOriginalOnMapClick = originalOnMapClick;
+      worldMapPrototype.onMapClick = function onMapClickWithDebugLogging(event) {
+        logMapClickDebug(getMapClickDebugPayload(this, event, "before-original-onMapClick"));
+        const result = originalOnMapClick.apply(this, arguments);
+        logMapClickDebug(getMapClickDebugPayload(this, event, "after-original-onMapClick"));
+        return result;
+      };
+    }
+
+    window[PATCH_FLAG].worldMapClickDebug = true;
+    return true;
+  }
+
+  function patchServerWildClearingFunctionalFix() {
+    const MapDataByteArray = getMapDataByteArrayClass();
+    const DiamondMapTile2 = getDiamondMapTile2Class();
+
+    if (
+      !MapDataByteArray
+      || !MapDataByteArray.prototype
+      || !DiamondMapTile2
+    ) {
+      return false;
+    }
+
+    const mapDataPrototype = MapDataByteArray.prototype;
+
+    if (!mapDataPrototype.__callOfRomaServerWildClearingOriginalGetTileObj) {
+      const originalGetTileObj = mapDataPrototype.getTileObj;
+
+      if (typeof originalGetTileObj !== "function") {
+        return false;
+      }
+
+      mapDataPrototype.__callOfRomaServerWildClearingOriginalGetTileObj = originalGetTileObj;
+      mapDataPrototype.getTileObj = function getTileObjWithServerWildClearingFix(fieldX, fieldY) {
+        const tile = originalGetTileObj.apply(this, arguments);
+        return correctServerWildClearingTile(this, fieldX, fieldY, tile);
+      };
+    }
+
+    window[PATCH_FLAG].serverWildClearingFix = true;
+    return true;
   }
 
   function getCastleObjClass() {
@@ -1095,10 +1541,12 @@
     const citySpritesPatched = patchWorldMapCitySprites();
     const arenaCleanupPatched = patchArenaReminderCleanup();
     const cityHeroSelectionPatched = patchCampaignCityHeroSelection();
+    const mapClickDebugPatched = patchWorldMapClickDebugLogger();
     const newsPopupPatched = patchNewsPopupDefaultClosed();
     const questCountRefreshPatched = patchQuestCountLaunchRefresh();
     const questPopupPatched = patchCompletedQuestPopup();
     const rechargeSidebarPatched = patchRechargeSidebarDefaultClosed();
+    const serverWildClearingFixPatched = patchServerWildClearingFunctionalFix();
     const heroTroopCapacityPatched = patchHeroTroopDisplayedCapacity();
 
     if (
@@ -1106,10 +1554,12 @@
       && arenaCleanupPatched
       && cityHeroSelectionPatched
       && heroTroopCapacityPatched
+      && mapClickDebugPatched
       && newsPopupPatched
       && questCountRefreshPatched
       && questPopupPatched
       && rechargeSidebarPatched
+      && serverWildClearingFixPatched
     ) {
       window.clearInterval(pollId);
     }

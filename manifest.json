@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Call of Roma Client Fixes",
-  "version": "1.6.3",
-  "description": "Fixes Call of Roma city sprites, stale arena reminders, campaign hero city selection, troop capacity, quest counts, and noisy ads.",
+  "version": "1.6.5",
+  "description": "Fixes Call of Roma UI bugs and server-confirmed wilds mislabeled as clearings.",
   "action": {
     "default_title": "Call of Roma Client Fixes"
   },

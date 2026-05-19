@@ -11,6 +11,23 @@ The original world-map `Castle4Ani` is constructed with the `field.castle3` reso
 - `expandLevel = 3` uses `field.castle4`
 - lower expansion levels keep the original client behavior
 
+### World Map Tile Click Debugger
+
+This debug build logs world-map tile information to the browser console when a tile is clicked. It does not change map behavior, tile creation, visuals, attacks, building, or server requests.
+
+- logs the clicked coordinate and `idField`
+- logs cached server `mapStr` level for the coordinate when available
+- logs raw static terrain type/family and transposed terrain type/family
+- logs castle bit, cached tile state before and after the original click handler, and basic map container state
+
+### Server Wild Clearing Functional Fix
+
+Some coordinates are visually terrain but vanilla treats them as buildable clearings because the static terrain tile is flat. When the server viewport data says a coordinate has a nonzero wild level but vanilla has no tile object, this extension creates a minimal functional wild tile so the coordinate opens as field info instead of New City.
+
+- only applies when vanilla returns `null` for the tile and server `mapStr` level is greater than zero
+- does not attempt final wild family mapping or overlay visuals
+- existing wilds, cities, NPCs, battle fields, and normal clearings are left alone
+
 ### Arena/Intelligence Reminder Cleanup
 
 The original client clears expired countdown labels but can leave stale returning-hero and expired arena entries in the arrays that power the Intelligence window and its reminder bubbles. This extension prunes those expired client-side entries before the reminder counts and army-action lists render.
