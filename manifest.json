@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Call of Roma Client Fixes",
-  "version": "1.6.5",
-  "description": "Fixes Call of Roma UI bugs and server-confirmed wilds mislabeled as clearings.",
+  "version": "1.6.9",
+  "description": "Fixes Call of Roma UI bugs, removes the external recharge ad, and makes server-confirmed wilderness clearings open as wilds.",
   "action": {
     "default_title": "Call of Roma Client Fixes"
   },
