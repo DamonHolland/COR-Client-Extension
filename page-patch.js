@@ -18,23 +18,48 @@
     questPopup: false,
     serverWildClearingFix: false,
     cottageMode: false,
-    farmingMode: false
+    farmingMode: false,
+    dummyLoad: false,
+    webglRecovery: false
   };
 
   const serverWildLevels = Object.create(null);
   const AFK_MODE_STYLE_ID = "cor-afk-mode-style";
+  const AFK_CONTROLS_ID = "cor-afk-controls";
   const COTTAGE_MODE_BUTTON_ID = "cor-cottage-mode-btn";
   const FARMING_MODE_BUTTON_ID = "cor-farming-mode-btn";
+  const DUMMY_PANEL_ID = "cor-dummy-panel";
+  const DUMMY_COUNT_INPUT_ID = "cor-dummy-count";
+  const DUMMY_LOAD_BUTTON_ID = "cor-dummy-load-btn";
+  const DUMMY_MELEE_ARMY_POSITIONS = [0, 1, 2];
+  const DUMMY_RANGED_ARMY_POSITIONS = [3, 4, 5];
   const COTTAGE_MODE_INTERVAL_MS = 2500;
   const FARMING_MODE_INTERVAL_MS = 2500;
   const COTTAGE_MODE_RETRY_MS = 1200;
   const FARMING_MODE_RETRY_MS = 1200;
+  const DUMMY_ASSIGN_STEP_DELAY_MS = 450;
+  const DUMMY_ASSIGN_FAST_STEP_DELAY_MS = 120;
+  const DUMMY_ASSIGN_RETRY_DELAY_MS = 300;
+  const DUMMY_ASSIGN_MAX_ATTEMPTS = 15;
+  const DUMMY_UNLOAD_SETTLE_MS = 350;
+  const DUMMY_SOCKET_READY_TIMEOUT_MS = 20000;
+  const DUMMY_SOCKET_POLL_MS = 80;
+  const WEBGL_RECOVERY_BANNER_ID = "cor-webgl-recovery-banner";
+  const WEBGL_RECOVERY_STYLE_ID = "cor-webgl-recovery-style";
+  const WEBGL_RECOVERY_RELOAD_PROMPT_MS = 8000;
+  const WEBGL_RECOVERY_AUTO_RELOAD_AFTER_RESTORE_MS = 1200;
   let cottageModeEnabled = false;
   let cottageModeTimerId = null;
   let cottageModeGateReason = "";
   let farmingModeEnabled = false;
   let farmingModeTimerId = null;
   let farmingModeGateReason = "";
+  let dummyLoadInProgress = false;
+  let webglContextLost = false;
+  let webglRecoveryReloadPromptTimeoutId = null;
+  let webglRecoveryAutoReloadTimeoutId = null;
+  let webglRecoverySuspendedCottage = false;
+  let webglRecoverySuspendedFarming = false;
 
   function removeExternalRechargeAd() {
     let removed = false;
@@ -106,6 +131,24 @@
     }
 
     return factory.getWorkerController() || null;
+  }
+
+  function getArmyController() {
+    const factory = getControllerFactoryInstance();
+
+    if (!factory || typeof factory.getArmyController !== "function") {
+      return null;
+    }
+
+    return factory.getArmyController() || null;
+  }
+
+  function getTroopForConstants() {
+    return window.TroopForConstants
+      || (window.roma
+        && window.roma.common
+        && window.roma.common.constants
+        && window.roma.common.constants.TroopForConstants);
   }
 
   function getWorkerConstant() {
@@ -540,6 +583,37 @@
     setCottageModeEnabled(!cottageModeEnabled);
   }
 
+  function ensureAfKControlsContainer() {
+    if (!isAfKModeGameFrame()) {
+      const strayControls = document.getElementById(AFK_CONTROLS_ID);
+
+      if (strayControls) {
+        strayControls.remove();
+      }
+
+      return null;
+    }
+
+    ensureAfKModeStyles();
+
+    let controls = document.getElementById(AFK_CONTROLS_ID);
+
+    if (controls) {
+      return controls;
+    }
+
+    controls = document.createElement("div");
+    controls.id = AFK_CONTROLS_ID;
+
+    const mountTarget = document.body || document.documentElement;
+
+    if (mountTarget) {
+      mountTarget.appendChild(controls);
+    }
+
+    return controls;
+  }
+
   function ensureAfKModeStyles() {
     if (document.getElementById(AFK_MODE_STYLE_ID)) {
       return;
@@ -548,10 +622,18 @@
     const style = document.createElement("style");
     style.id = AFK_MODE_STYLE_ID;
     style.textContent = [
-      ".cor-afk-mode-btn {",
+      "#" + AFK_CONTROLS_ID + " {",
       "  position: fixed !important;",
+      "  top: 8px !important;",
       "  left: 8px !important;",
       "  z-index: 2147483647 !important;",
+      "  display: flex !important;",
+      "  flex-direction: column;",
+      "  align-items: flex-start;",
+      "  gap: 4px;",
+      "  pointer-events: auto;",
+      "}",
+      ".cor-afk-mode-btn {",
       "  margin: 0;",
       "  min-width: 42px;",
       "  padding: 6px 10px;",
@@ -566,12 +648,6 @@
       "}",
       ".cor-afk-mode-btn:hover {",
       "  background: #4a4032;",
-      "}",
-      "#" + COTTAGE_MODE_BUTTON_ID + " {",
-      "  top: 8px !important;",
-      "}",
-      "#" + FARMING_MODE_BUTTON_ID + " {",
-      "  top: 40px !important;",
       "}",
       "#" + COTTAGE_MODE_BUTTON_ID + ".cor-cottage-on {",
       "  background: #2d6a4f;",
@@ -588,27 +664,55 @@
       "}",
       "#" + FARMING_MODE_BUTTON_ID + ".cor-farming-on:hover {",
       "  background: #9a6b3f;",
+      "}",
+      "#" + DUMMY_PANEL_ID + " {",
+      "  display: flex !important;",
+      "  align-items: center;",
+      "  gap: 6px;",
+      "  pointer-events: auto;",
+      "}",
+      "#" + DUMMY_COUNT_INPUT_ID + " {",
+      "  display: block !important;",
+      "  visibility: visible !important;",
+      "  width: 52px !important;",
+      "  min-width: 52px;",
+      "  margin: 0;",
+      "  padding: 6px 6px;",
+      "  border: 1px solid #c9a227 !important;",
+      "  border-radius: 4px;",
+      "  background: #1a1610 !important;",
+      "  color: #ffffff !important;",
+      "  font: 600 13px/1.2 Arial, sans-serif;",
+      "  text-align: center;",
+      "  box-sizing: border-box;",
+      "  -moz-appearance: textfield;",
+      "}",
+      "#" + DUMMY_COUNT_INPUT_ID + "::-webkit-outer-spin-button,",
+      "#" + DUMMY_COUNT_INPUT_ID + "::-webkit-inner-spin-button {",
+      "  -webkit-appearance: none;",
+      "  margin: 0;",
+      "}",
+      "#" + DUMMY_LOAD_BUTTON_ID + " {",
+      "  min-width: 56px;",
       "}"
     ].join("\n");
     document.head.appendChild(style);
   }
 
   function ensureCottageModeButton() {
-    if (!isAfKModeGameFrame()) {
-      const strayButton = document.getElementById(COTTAGE_MODE_BUTTON_ID);
+    const controls = ensureAfKControlsContainer();
 
-      if (strayButton) {
-        strayButton.remove();
-      }
-
+    if (!controls) {
       return null;
     }
-
-    ensureAfKModeStyles();
 
     let button = document.getElementById(COTTAGE_MODE_BUTTON_ID);
 
     if (button) {
+      if (button.parentElement !== controls) {
+        controls.appendChild(button);
+      }
+
       updateCottageModeButton();
       return button;
     }
@@ -620,13 +724,9 @@
     button.title = "Cottage mode: keep every builder busy by upgrading the lowest cottage";
     button.addEventListener("click", toggleCottageMode);
 
-    const mountTarget = document.body || document.documentElement;
-
-    if (mountTarget) {
-      mountTarget.appendChild(button);
-      updateCottageModeButton();
-      window[PATCH_FLAG].cottageMode = true;
-    }
+    controls.appendChild(button);
+    updateCottageModeButton();
+    window[PATCH_FLAG].cottageMode = true;
 
     return button;
   }
@@ -855,22 +955,234 @@
     setFarmingModeEnabled(!farmingModeEnabled);
   }
 
-  function ensureFarmingModeButton() {
-    if (!isAfKModeGameFrame()) {
-      const strayButton = document.getElementById(FARMING_MODE_BUTTON_ID);
-
-      if (strayButton) {
-        strayButton.remove();
-      }
-
-      return null;
+  function suspendAfKModesForWebGLRecovery() {
+    if (cottageModeEnabled && cottageModeTimerId !== null) {
+      webglRecoverySuspendedCottage = true;
+      stopCottageModeTimer();
     }
 
-    ensureAfKModeStyles();
+    if (farmingModeEnabled && farmingModeTimerId !== null) {
+      webglRecoverySuspendedFarming = true;
+      stopFarmingModeTimer();
+    }
+  }
+
+  function resumeAfKModesAfterWebGLRecovery() {
+    if (webglRecoverySuspendedCottage) {
+      webglRecoverySuspendedCottage = false;
+
+      if (cottageModeEnabled) {
+        startCottageModeTimer();
+      }
+    }
+
+    if (webglRecoverySuspendedFarming) {
+      webglRecoverySuspendedFarming = false;
+
+      if (farmingModeEnabled) {
+        startFarmingModeTimer();
+      }
+    }
+  }
+
+  function clearWebGLRecoveryTimeouts() {
+    if (webglRecoveryReloadPromptTimeoutId !== null) {
+      window.clearTimeout(webglRecoveryReloadPromptTimeoutId);
+      webglRecoveryReloadPromptTimeoutId = null;
+    }
+
+    if (webglRecoveryAutoReloadTimeoutId !== null) {
+      window.clearTimeout(webglRecoveryAutoReloadTimeoutId);
+      webglRecoveryAutoReloadTimeoutId = null;
+    }
+  }
+
+  function reloadGamePageForWebGLRecovery() {
+    clearWebGLRecoveryTimeouts();
+
+    try {
+      window.location.reload();
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  function ensureWebGLRecoveryStyles() {
+    if (document.getElementById(WEBGL_RECOVERY_STYLE_ID)) {
+      return;
+    }
+
+    const style = document.createElement("style");
+    style.id = WEBGL_RECOVERY_STYLE_ID;
+    style.textContent = [
+      "#" + WEBGL_RECOVERY_BANNER_ID + " {",
+      "  position: fixed !important;",
+      "  top: 50% !important;",
+      "  left: 50% !important;",
+      "  transform: translate(-50%, -50%) !important;",
+      "  z-index: 2147483646 !important;",
+      "  max-width: min(420px, 92vw) !important;",
+      "  padding: 16px 18px !important;",
+      "  border-radius: 8px !important;",
+      "  background: rgba(20, 16, 12, 0.94) !important;",
+      "  color: #f5e6c8 !important;",
+      "  font: 14px/1.45 Arial, sans-serif !important;",
+      "  text-align: center !important;",
+      "  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45) !important;",
+      "  pointer-events: auto !important;",
+      "}",
+      "#" + WEBGL_RECOVERY_BANNER_ID + " button {",
+      "  margin-top: 12px !important;",
+      "  padding: 8px 14px !important;",
+      "  cursor: pointer !important;",
+      "  border: 1px solid #8a6d3b !important;",
+      "  border-radius: 4px !important;",
+      "  background: #3d2f1f !important;",
+      "  color: #f5e6c8 !important;",
+      "  font: inherit !important;",
+      "}"
+    ].join("\n");
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function showWebGLRecoveryBanner(mode) {
+    if (!isAfKModeGameFrame()) {
+      return;
+    }
+
+    ensureWebGLRecoveryStyles();
+
+    let banner = document.getElementById(WEBGL_RECOVERY_BANNER_ID);
+
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = WEBGL_RECOVERY_BANNER_ID;
+      (document.body || document.documentElement).appendChild(banner);
+    }
+
+    banner.replaceChildren();
+
+    const message = document.createElement("div");
+
+    if (mode === "recovering") {
+      message.textContent = "Game graphics were reset by the browser. Recovering…";
+    } else if (mode === "restored") {
+      message.textContent = "Graphics restored. Reloading the game…";
+    } else {
+      message.textContent = "Game graphics were lost. Reload the page to continue.";
+    }
+
+    banner.appendChild(message);
+
+    if (mode === "reload") {
+      const reloadButton = document.createElement("button");
+      reloadButton.type = "button";
+      reloadButton.textContent = "Reload game";
+      reloadButton.addEventListener("click", reloadGamePageForWebGLRecovery);
+      banner.appendChild(reloadButton);
+    }
+
+    banner.hidden = false;
+  }
+
+  function hideWebGLRecoveryBanner() {
+    const banner = document.getElementById(WEBGL_RECOVERY_BANNER_ID);
+
+    if (banner) {
+      banner.hidden = true;
+    }
+  }
+
+  function scheduleWebGLRecoveryReloadPrompt() {
+    if (webglRecoveryReloadPromptTimeoutId !== null) {
+      return;
+    }
+
+    webglRecoveryReloadPromptTimeoutId = window.setTimeout(function showReloadPrompt() {
+      webglRecoveryReloadPromptTimeoutId = null;
+
+      if (!webglContextLost) {
+        return;
+      }
+
+      showWebGLRecoveryBanner("reload");
+    }, WEBGL_RECOVERY_RELOAD_PROMPT_MS);
+  }
+
+  function handleWebGLContextLost() {
+    if (webglContextLost) {
+      return;
+    }
+
+    webglContextLost = true;
+    suspendAfKModesForWebGLRecovery();
+    showWebGLRecoveryBanner("recovering");
+    scheduleWebGLRecoveryReloadPrompt();
+  }
+
+  function handleWebGLContextRestored() {
+    webglContextLost = false;
+    clearWebGLRecoveryTimeouts();
+    showWebGLRecoveryBanner("restored");
+    resumeAfKModesAfterWebGLRecovery();
+
+    webglRecoveryAutoReloadTimeoutId = window.setTimeout(function reloadAfterWebGLRestore() {
+      webglRecoveryAutoReloadTimeoutId = null;
+      reloadGamePageForWebGLRecovery();
+    }, WEBGL_RECOVERY_AUTO_RELOAD_AFTER_RESTORE_MS);
+  }
+
+  function installWebGLContextRecovery() {
+    if (window[PATCH_FLAG].webglRecovery) {
+      return true;
+    }
+
+    if (!isAfKModeGameFrame()) {
+      return false;
+    }
+
+    const canvas = document.querySelector(".egret-player canvas");
+
+    if (!canvas || canvas.__corWebglRecoveryBound) {
+      if (canvas && canvas.__corWebglRecoveryBound) {
+        window[PATCH_FLAG].webglRecovery = true;
+      }
+
+      return Boolean(canvas && canvas.__corWebglRecoveryBound);
+    }
+
+    canvas.__corWebglRecoveryBound = true;
+
+    canvas.addEventListener("webglcontextlost", function onWebGLContextLost(event) {
+      if (event && typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+
+      handleWebGLContextLost();
+    }, false);
+
+    canvas.addEventListener("webglcontextrestored", function onWebGLContextRestored() {
+      handleWebGLContextRestored();
+    }, false);
+
+    window[PATCH_FLAG].webglRecovery = true;
+    return true;
+  }
+
+  function ensureFarmingModeButton() {
+    const controls = ensureAfKControlsContainer();
+
+    if (!controls) {
+      return null;
+    }
 
     let button = document.getElementById(FARMING_MODE_BUTTON_ID);
 
     if (button) {
+      if (button.parentElement !== controls) {
+        controls.appendChild(button);
+      }
+
       updateFarmingModeButton();
       return button;
     }
@@ -882,13 +1194,9 @@
     button.title = "Farming mode: fill empty worker job queues with max farmer training";
     button.addEventListener("click", toggleFarmingMode);
 
-    const mountTarget = document.body || document.documentElement;
-
-    if (mountTarget) {
-      mountTarget.appendChild(button);
-      updateFarmingModeButton();
-      window[PATCH_FLAG].farmingMode = true;
-    }
+    controls.appendChild(button);
+    updateFarmingModeButton();
+    window[PATCH_FLAG].farmingMode = true;
 
     return button;
   }
@@ -910,12 +1218,426 @@
     return true;
   }
 
+  function getDummyTroopCount() {
+    const input = document.getElementById(DUMMY_COUNT_INPUT_ID);
+    const rawValue = input ? input.value : "1";
+    const count = toInt(rawValue);
+
+    return count > 0 ? count : 1;
+  }
+
+  function isArmyResponseSuccess(response) {
+    return !response
+      || typeof response.isSuccess !== "function"
+      || response.isSuccess();
+  }
+
+  function showArmyResponseError(response) {
+    const MyAlert = window.views
+      && window.views.spreadUI
+      && window.views.spreadUI.MyAlert;
+
+    if (
+      MyAlert
+      && typeof MyAlert.showError === "function"
+      && response
+    ) {
+      MyAlert.showError(response);
+    }
+  }
+
+  function getSelectedHeroObj() {
+    const helper = getHeroHelper();
+
+    if (helper && helper.curSelectHero) {
+      return helper.curSelectHero;
+    }
+
+    const player = getPlayerObj();
+    const castle = getCurrentCastle();
+
+    if (!player || !castle || !castle.heroManager || !castle.heroManager.heroArray) {
+      return null;
+    }
+
+    const heroes = castle.heroManager.heroArray;
+
+    if (typeof heroes.length !== "number") {
+      return null;
+    }
+
+    for (let index = 0; index < heroes.length; index += 1) {
+      const hero = typeof heroes.getItemAt === "function"
+        ? heroes.getItemAt(index)
+        : heroes[index];
+
+      if (hero && hero.selectedInUi) {
+        return hero;
+      }
+    }
+
+    return null;
+  }
+
+  function getHeroCityId(hero) {
+    if (hero && hero.castleObj && hero.castleObj.cityId != null) {
+      return toInt(hero.castleObj.cityId);
+    }
+
+    if (hero && hero.castle && hero.castle.cityId != null) {
+      return toInt(hero.castle.cityId);
+    }
+
+    return null;
+  }
+
+  function getHeroId(hero) {
+    return hero && hero.heroInfo && hero.heroInfo.id != null
+      ? toInt(hero.heroInfo.id)
+      : null;
+  }
+
+  function getHeroCastle(hero, cityId) {
+    if (hero && hero.castleObj) {
+      return hero.castleObj;
+    }
+
+    const player = getPlayerObj();
+
+    if (!player || cityId == null || typeof player.getCastleObjById !== "function") {
+      return null;
+    }
+
+    return player.getCastleObjById(cityId);
+  }
+
+  function getCastleTroopStock(castle, troopType) {
+    if (!castle || !castle.troopManager || typeof castle.troopManager.getTroopByTypeId !== "function") {
+      return 0;
+    }
+
+    const troopPair = castle.troopManager.getTroopByTypeId(troopType);
+
+    return toInt(troopPair && troopPair.value);
+  }
+
+  function buildCastleToHeroDelta(castle, troopType, troopsOnHero) {
+    const castleStock = getCastleTroopStock(castle, troopType);
+    const remainInCastle = Math.max(0, castleStock - troopsOnHero);
+
+    return remainInCastle + 0.1;
+  }
+
+  function waitUntilSocketReady(callback, timeoutMs) {
+    const startedAt = Date.now();
+    const limitMs = timeoutMs || DUMMY_SOCKET_READY_TIMEOUT_MS;
+
+    function poll() {
+      if (!isSocketBusy()) {
+        callback(true);
+        return;
+      }
+
+      if (Date.now() - startedAt >= limitMs) {
+        callback(false);
+        return;
+      }
+
+      window.setTimeout(poll, DUMMY_SOCKET_POLL_MS);
+    }
+
+    poll();
+  }
+
+  function getHeroSlotTroopCount(hero, armyPos) {
+    const troops = hero && hero.armyManager && hero.armyManager.troopsArray;
+    const troop = troops && troops[armyPos];
+
+    return toInt(troop && troop.count);
+  }
+
+  function isHeroSlotFilled(hero, assignment) {
+    return getHeroSlotTroopCount(hero, assignment.armyPos) >= assignment.count;
+  }
+
+  function assignHeroTroopsFromCastle(castle, cityId, heroId, hero, assignments, callback) {
+    const armyController = getArmyController();
+
+    if (!armyController || typeof armyController.castle2Hero !== "function") {
+      callback(false);
+      return;
+    }
+
+    let index = 0;
+    let attempts = 0;
+
+    function assignCurrent() {
+      if (index >= assignments.length) {
+        callback(true);
+        return;
+      }
+
+      const assignment = assignments[index];
+
+      waitUntilSocketReady(function onSocketReady(ready) {
+        if (!ready) {
+          attempts += 1;
+
+          if (attempts >= DUMMY_ASSIGN_MAX_ATTEMPTS) {
+            callback(false);
+            return;
+          }
+
+          window.setTimeout(assignCurrent, DUMMY_ASSIGN_RETRY_DELAY_MS);
+          return;
+        }
+
+        const delta = buildCastleToHeroDelta(castle, assignment.troopType, assignment.count);
+
+        armyController.castle2Hero(
+          cityId,
+          heroId,
+          assignment.armyPos,
+          assignment.troopType,
+          delta,
+          function dummyAssignCallback(response) {
+            if (typeof hero.updateHeroObj === "function") {
+              hero.updateHeroObj();
+            }
+
+            const slotFilled = isHeroSlotFilled(hero, assignment);
+            const responseOk = isArmyResponseSuccess(response);
+
+            if (!responseOk || !slotFilled) {
+              attempts += 1;
+
+              if (attempts >= DUMMY_ASSIGN_MAX_ATTEMPTS) {
+                if (!responseOk) {
+                  showArmyResponseError(response);
+                }
+
+                callback(false);
+                return;
+              }
+
+              window.setTimeout(
+                assignCurrent,
+                DUMMY_ASSIGN_RETRY_DELAY_MS * Math.min(attempts, 5)
+              );
+              return;
+            }
+
+            const stepDelay = attempts > 0
+              ? DUMMY_ASSIGN_STEP_DELAY_MS
+              : DUMMY_ASSIGN_FAST_STEP_DELAY_MS;
+
+            attempts = 0;
+            index += 1;
+            window.setTimeout(assignCurrent, stepDelay);
+          },
+          true
+        );
+      }, DUMMY_SOCKET_READY_TIMEOUT_MS);
+    }
+
+    assignCurrent();
+  }
+
+  function loadDummyHero() {
+    if (dummyLoadInProgress) {
+      return;
+    }
+
+    if (!isAfKModeGameFrame() || !getPlayerObj()) {
+      return;
+    }
+
+    const armyController = getArmyController();
+    const TroopForConstants = getTroopForConstants();
+    const hero = getSelectedHeroObj();
+    const count = getDummyTroopCount();
+    const cityId = getHeroCityId(hero);
+    const heroId = getHeroId(hero);
+    const castle = getHeroCastle(hero, cityId);
+
+    if (
+      !armyController
+      || !TroopForConstants
+      || !hero
+      || !castle
+      || cityId == null
+      || heroId == null
+    ) {
+      return;
+    }
+
+    if (hero.isInCastle === false) {
+      return;
+    }
+
+    dummyLoadInProgress = true;
+
+    function finishDummyLoad() {
+      dummyLoadInProgress = false;
+
+      if (typeof hero.updateHeroObj === "function") {
+        hero.updateHeroObj();
+      }
+    }
+
+    const assignments = [];
+
+    for (let index = 0; index < DUMMY_MELEE_ARMY_POSITIONS.length; index += 1) {
+      assignments.push({
+        armyPos: DUMMY_MELEE_ARMY_POSITIONS[index],
+        troopType: TroopForConstants.T_TRIARII,
+        count: count
+      });
+    }
+
+    for (let index = 0; index < DUMMY_RANGED_ARMY_POSITIONS.length; index += 1) {
+      assignments.push({
+        armyPos: DUMMY_RANGED_ARMY_POSITIONS[index],
+        troopType: TroopForConstants.T_ARCHERS,
+        count: count
+      });
+    }
+
+    function startAssignmentsAfterUnload() {
+      window.setTimeout(function runDummyAssignments() {
+        assignHeroTroopsFromCastle(
+          castle,
+          cityId,
+          heroId,
+          hero,
+          assignments,
+          function dummyLoadFinished(success) {
+            finishDummyLoad();
+
+            if (!success) {
+              return;
+            }
+          }
+        );
+      }, DUMMY_UNLOAD_SETTLE_MS);
+    }
+
+    function tryUnloadHero(attempt) {
+      waitUntilSocketReady(function onUnloadSocketReady(ready) {
+        if (!ready) {
+          if (attempt >= DUMMY_ASSIGN_MAX_ATTEMPTS) {
+            finishDummyLoad();
+            return;
+          }
+
+          window.setTimeout(function retryUnload() {
+            tryUnloadHero(attempt + 1);
+          }, DUMMY_ASSIGN_RETRY_DELAY_MS);
+          return;
+        }
+
+        armyController.uninstallHeroTroop(
+          cityId,
+          heroId,
+          function dummyUnloadCallback(response) {
+            if (!isArmyResponseSuccess(response)) {
+              if (attempt >= DUMMY_ASSIGN_MAX_ATTEMPTS) {
+                showArmyResponseError(response);
+                finishDummyLoad();
+                return;
+              }
+
+              window.setTimeout(function retryUnloadAfterError() {
+                tryUnloadHero(attempt + 1);
+              }, DUMMY_ASSIGN_RETRY_DELAY_MS * Math.min(attempt + 1, 5));
+              return;
+            }
+
+            if (typeof hero.updateHeroObj === "function") {
+              hero.updateHeroObj();
+            }
+
+            startAssignmentsAfterUnload();
+          },
+          true
+        );
+      }, DUMMY_SOCKET_READY_TIMEOUT_MS);
+    }
+
+    tryUnloadHero(0);
+  }
+
+  function ensureDummyCountInput(panel) {
+    let countInput = document.getElementById(DUMMY_COUNT_INPUT_ID);
+
+    if (countInput) {
+      return countInput;
+    }
+
+    countInput = document.createElement("input");
+    countInput.id = DUMMY_COUNT_INPUT_ID;
+    countInput.type = "number";
+    countInput.min = "1";
+    countInput.step = "1";
+    countInput.value = "1";
+    countInput.title = "Troops per division slot (fills all 3 front + 3 rear slots)";
+    countInput.setAttribute("aria-label", "Dummy troop count");
+    panel.insertBefore(countInput, panel.firstChild);
+
+    return countInput;
+  }
+
+  function ensureDummyPanel() {
+    const controls = ensureAfKControlsContainer();
+
+    if (!controls) {
+      return null;
+    }
+
+    let panel = document.getElementById(DUMMY_PANEL_ID);
+
+    if (panel && panel.parentElement !== controls) {
+      controls.appendChild(panel);
+    }
+
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = DUMMY_PANEL_ID;
+      controls.appendChild(panel);
+      window[PATCH_FLAG].dummyLoad = true;
+    }
+
+    ensureDummyCountInput(panel);
+
+    let loadButton = document.getElementById(DUMMY_LOAD_BUTTON_ID);
+
+    if (!loadButton) {
+      loadButton = document.createElement("button");
+      loadButton.id = DUMMY_LOAD_BUTTON_ID;
+      loadButton.type = "button";
+      loadButton.className = "cor-afk-mode-btn";
+      loadButton.textContent = "Dummy";
+      loadButton.title = "Unload hero, then fill all 6 slots: Hastatus x3 front, Sagittarius x3 rear";
+      loadButton.addEventListener("click", loadDummyHero);
+      panel.appendChild(loadButton);
+    }
+
+    return panel;
+  }
+
   ensureCottageModeButton();
   ensureFarmingModeButton();
+  ensureDummyPanel();
 
   window.setInterval(function keepAfKModeButtonsVisible() {
+    if (!isAfKModeGameFrame()) {
+      return;
+    }
+
+    installWebGLContextRecovery();
     ensureCottageModeButton();
     ensureFarmingModeButton();
+    ensureDummyPanel();
   }, 3000);
 
   const externalRechargeObserver = new MutationObserver(function removeInjectedRechargeAd() {
@@ -924,7 +1646,7 @@
     }
   });
 
-  if (document.documentElement) {
+  if (window === window.top && document.documentElement) {
     externalRechargeObserver.observe(document.documentElement, {
       childList: true,
       subtree: true
@@ -2082,7 +2804,15 @@
   }
 
   const pollId = window.setInterval(function waitForGameClasses() {
-    removeExternalRechargeAd();
+    if (window === window.top) {
+      removeExternalRechargeAd();
+    }
+
+    if (!isAfKModeGameFrame()) {
+      return;
+    }
+
+    installWebGLContextRecovery();
     ensureCottageModeButton();
 
     const citySpritesPatched = patchWorldMapCitySprites();
