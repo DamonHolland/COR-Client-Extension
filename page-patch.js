@@ -19,7 +19,11 @@
     serverWildClearingFix: false,
     autoBuild: false,
     autoJob: false,
+    autoFreeBuildingSpeed: false,
+    blessingPopupSuppressed: false,
     dummyLoad: false,
+    heroGearBatch: false,
+    startupMute: false,
     webglRecovery: false
   };
 
@@ -35,6 +39,11 @@
   const DUMMY_PANEL_ID = "cor-dummy-panel";
   const DUMMY_COUNT_INPUT_ID = "cor-dummy-count";
   const DUMMY_LOAD_BUTTON_ID = "cor-dummy-load-btn";
+  const HERO_GEAR_PANEL_ID = "cor-hero-gear-panel";
+  const HERO_GEAR_UNEQUIP_ALL_BUTTON_ID = "cor-hero-gear-unequip-all-btn";
+  const HERO_GEAR_BEST_EQUIP_BUTTON_ID = "cor-hero-gear-best-equip-btn";
+  const HERO_GEAR_SOCKET_STEP_DELAY_MS = 120;
+  const HERO_OUTFIT_SLOT_MAX = 9;
   const DUMMY_MELEE_ARMY_POSITIONS = [0, 1, 2];
   const DUMMY_RANGED_ARMY_POSITIONS = [3, 4, 5];
   const AUTO_BUILD_INTERVAL_MS = 2500;
@@ -66,6 +75,11 @@
   const WEBGL_RECOVERY_STYLE_ID = "cor-webgl-recovery-style";
   const WEBGL_RECOVERY_RELOAD_PROMPT_MS = 8000;
   const WEBGL_RECOVERY_AUTO_RELOAD_AFTER_RESTORE_MS = 1200;
+  const AUTO_FREE_SPEED_DEBOUNCE_MS = 1500;
+  const AUTO_FREE_SPEED_MAX_ATTEMPTS = 50;
+  const AUTO_FREE_SPEED_RETRY_MS = 200;
+  const AFK_SETTINGS_STORAGE_KEY = "cor-afk-settings-v1";
+  const autoFreeSpeedInFlight = Object.create(null);
   let autoBuildMode = "cottage";
   let autoBuildEnabled = false;
   let autoBuildTimerId = null;
@@ -74,7 +88,9 @@
   let autoJobEnabled = false;
   let autoJobTimerId = null;
   let autoJobGateReason = "";
+  let afkSettingsRestored = false;
   let dummyLoadInProgress = false;
+  let heroGearBatchInProgress = false;
   let webglContextLost = false;
   let webglRecoveryReloadPromptTimeoutId = null;
   let webglRecoveryAutoReloadTimeoutId = null;
@@ -133,6 +149,17 @@
       && ControllerFactory.getInstance();
   }
 
+  function getCaesaryConfigInstance() {
+    const CaesaryConfig = window.CaesaryConfig
+      || (window.roma
+        && window.roma.logic
+        && window.roma.logic.CaesaryConfig);
+
+    return CaesaryConfig && CaesaryConfig.instance
+      ? CaesaryConfig.instance
+      : null;
+  }
+
   function getBuildingController() {
     const factory = getControllerFactoryInstance();
 
@@ -163,12 +190,34 @@
     return factory.getArmyController() || null;
   }
 
+  function getEquipController() {
+    const factory = getControllerFactoryInstance();
+
+    if (!factory || typeof factory.getEquipController !== "function") {
+      return null;
+    }
+
+    return factory.getEquipController() || null;
+  }
+
   function getTroopForConstants() {
     return window.TroopForConstants
       || (window.roma
         && window.roma.common
         && window.roma.common.constants
         && window.roma.common.constants.TroopForConstants);
+  }
+
+  function applyStartupMuteSetting() {
+    const config = getCaesaryConfigInstance();
+
+    if (!config) {
+      return false;
+    }
+
+    config.isPlaySound = false;
+    window[PATCH_FLAG].startupMute = true;
+    return true;
   }
 
   function getWorkerConstant() {
@@ -503,6 +552,99 @@
     const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % modes.length;
 
     return modes[nextIndex];
+  }
+
+  function canUseLocalStorage() {
+    try {
+      return typeof window.localStorage !== "undefined" && window.localStorage !== null;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function loadAfKSettings() {
+    if (!canUseLocalStorage()) {
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(AFK_SETTINGS_STORAGE_KEY);
+
+      if (!raw) {
+        return;
+      }
+
+      const settings = JSON.parse(raw);
+
+      if (settings && AUTO_BUILD_SELECT_MODES.indexOf(settings.buildMode) >= 0) {
+        autoBuildMode = settings.buildMode;
+      }
+
+      if (settings && AUTO_JOB_SELECT_MODES.indexOf(settings.jobMode) >= 0) {
+        autoJobMode = settings.jobMode;
+      }
+
+      if (settings && typeof settings.buildEnabled === "boolean") {
+        autoBuildEnabled = settings.buildEnabled;
+      }
+
+      if (settings && typeof settings.jobEnabled === "boolean") {
+        autoJobEnabled = settings.jobEnabled;
+      }
+    } catch (error) {
+      // ignore corrupt storage
+    }
+  }
+
+  function saveAfKSettings() {
+    if (!canUseLocalStorage()) {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(AFK_SETTINGS_STORAGE_KEY, JSON.stringify({
+        buildMode: autoBuildMode,
+        buildEnabled: autoBuildEnabled,
+        jobMode: autoJobMode,
+        jobEnabled: autoJobEnabled
+      }));
+    } catch (error) {
+      // ignore quota / privacy mode errors
+    }
+  }
+
+  function restorePersistedAfKModesWhenReady() {
+    if (afkSettingsRestored) {
+      return;
+    }
+
+    if (!isAfKModeGameFrame()) {
+      return;
+    }
+
+    const buildReady = !autoBuildEnabled || isGameFrameReadyForAutoBuild();
+    const jobReady = !autoJobEnabled || isGameFrameReadyForAutoJob();
+
+    if (!buildReady || !jobReady) {
+      return;
+    }
+
+    afkSettingsRestored = true;
+
+    updateAutoBuildModeButton();
+    updateAutoBuildToggleButton();
+    updateAutoJobModeButton();
+    updateAutoJobToggleButton();
+
+    if (autoBuildEnabled && autoBuildTimerId === null) {
+      runAutoBuildTick();
+      startAutoBuildTimer();
+    }
+
+    if (autoJobEnabled && autoJobTimerId === null) {
+      runAutoJobTick();
+      startAutoJobTimer();
+    }
   }
 
   function clearAutoModeButtonContent(button) {
@@ -850,6 +992,401 @@
     return true;
   }
 
+  function getBaseBuildingClass() {
+    return window.roma
+      && window.roma.logic
+      && window.roma.logic.object
+      && window.roma.logic.object.building
+      && window.roma.logic.object.building.BaseBuilding;
+  }
+
+  function getEvtDispatcher() {
+    return window.roma
+      && window.roma.message
+      && window.roma.message.EvtDispacther
+      && window.roma.message.EvtDispacther.instance;
+  }
+
+  function getBuildingStatusChangeEventClass() {
+    return window.roma
+      && window.roma.message
+      && window.roma.message.events
+      && window.roma.message.events.BuildingStatusChangeEvent;
+  }
+
+  function getMultiLang() {
+    return (window.roma && window.roma.util && window.roma.util.MultiLang)
+      || window.MultiLang
+      || null;
+  }
+
+  function resolveBuildingCityId(building, fallbackCityId) {
+    if (building && building.castle && building.castle.cityId != null) {
+      return toInt(building.castle.cityId);
+    }
+
+    if (fallbackCityId != null) {
+      return toInt(fallbackCityId);
+    }
+
+    const player = getPlayerObj();
+
+    if (player && typeof player.getCurCastleObj === "function") {
+      const viewedCastle = player.getCurCastleObj();
+
+      if (viewedCastle && viewedCastle.cityId != null) {
+        return toInt(viewedCastle.cityId);
+      }
+    }
+
+    return null;
+  }
+
+  function getBuildingAtPosition(castle, position) {
+    const buildingManager = castle && castle.buildingManager;
+
+    if (!buildingManager || position == null) {
+      return null;
+    }
+
+    if (typeof buildingManager.getBuildingObjAtPosition === "function") {
+      return buildingManager.getBuildingObjAtPosition(position);
+    }
+
+    return null;
+  }
+
+  function getAutoFreeSpeedKey(cityId, position) {
+    if (cityId == null || position == null) {
+      return null;
+    }
+
+    return String(toInt(cityId)) + ":" + String(toInt(position));
+  }
+
+  function isEligibleForFreeBuildingSpeed(building) {
+    const BuildingConstant = getBuildingConstant();
+
+    if (!building || !BuildingConstant) {
+      return false;
+    }
+
+    if (toInt(building.status) !== toInt(BuildingConstant.STATUS_UPGRAD_ING)) {
+      return false;
+    }
+
+    if (typeof building.getNextLevelBuildingRule !== "function") {
+      return false;
+    }
+
+    const nextLevelRule = building.getNextLevelBuildingRule();
+
+    if (!nextLevelRule) {
+      return false;
+    }
+
+    const buildMinutes = Number(nextLevelRule.costTime) / 60;
+
+    if (!Number.isFinite(buildMinutes)) {
+      return false;
+    }
+
+    return buildMinutes <= toInt(BuildingConstant.FREE_SPEED_UP_MINS_TIME);
+  }
+
+  function tryAutoFreeBuildingSpeed(building, cityIdHint, attempt) {
+    const tryAttempt = toInt(attempt);
+
+    if (!building) {
+      return;
+    }
+
+    const position = building.position != null ? building.position : building.positionId;
+    const cityId = resolveBuildingCityId(building, cityIdHint);
+    const speedKey = getAutoFreeSpeedKey(cityId, position);
+
+    if (speedKey == null) {
+      return;
+    }
+
+    const BuildingConstant = getBuildingConstant();
+    const buildingController = getBuildingController();
+    let liveBuilding = building;
+
+    if (cityId != null && getPlayerObj() && typeof getPlayerObj().getCastleObjById === "function") {
+      const castle = getPlayerObj().getCastleObjById(cityId);
+      const buildingAtPosition = getBuildingAtPosition(castle, position);
+
+      if (buildingAtPosition) {
+        liveBuilding = buildingAtPosition;
+      }
+    }
+
+    if (!BuildingConstant || !buildingController) {
+      if (tryAttempt < AUTO_FREE_SPEED_MAX_ATTEMPTS) {
+        window.setTimeout(function retryAutoFreeSpeedForController() {
+          tryAutoFreeBuildingSpeed(building, cityIdHint, tryAttempt + 1);
+        }, AUTO_FREE_SPEED_RETRY_MS);
+      }
+
+      return;
+    }
+
+    if (!isEligibleForFreeBuildingSpeed(liveBuilding)) {
+      if (tryAttempt < AUTO_FREE_SPEED_MAX_ATTEMPTS) {
+        window.setTimeout(function retryAutoFreeSpeedForStatus() {
+          tryAutoFreeBuildingSpeed(building, cityIdHint, tryAttempt + 1);
+        }, AUTO_FREE_SPEED_RETRY_MS);
+      }
+
+      return;
+    }
+
+    const now = Date.now();
+    const lastAttemptAt = autoFreeSpeedInFlight[speedKey];
+
+    if (lastAttemptAt && now - lastAttemptAt < AUTO_FREE_SPEED_DEBOUNCE_MS) {
+      return;
+    }
+
+    autoFreeSpeedInFlight[speedKey] = now;
+
+    buildingController.speedUpBuilding(
+      cityId,
+      position,
+      BuildingConstant.FREE_BUILDING_SPEED_UP_ITEM,
+      function onAutoFreeSpeedUpResponse(response) {
+        if (response && typeof response.isSuccess === "function" && response.isSuccess()) {
+          delete autoFreeSpeedInFlight[speedKey];
+        }
+      },
+      false
+    );
+  }
+
+  function scheduleAutoFreeBuildingSpeed(building, cityIdHint) {
+    window.setTimeout(function runAutoFreeSpeedNow() {
+      tryAutoFreeBuildingSpeed(building, cityIdHint, 0);
+    }, 0);
+
+    window.setTimeout(function runAutoFreeSpeedSoon() {
+      tryAutoFreeBuildingSpeed(building, cityIdHint, 0);
+    }, 300);
+  }
+
+  function patchBlessingPopupSuppression() {
+    if (window[PATCH_FLAG].blessingPopupSuppressed) {
+      return true;
+    }
+
+    const MyAlert = window.views
+      && window.views.spreadUI
+      && window.views.spreadUI.MyAlert;
+    const MyAlert1 = window.views
+      && window.views.spreadUI
+      && window.views.spreadUI.beginnerGuide
+      && window.views.spreadUI.beginnerGuide.MyAlert1;
+    const MultiLang = getMultiLang();
+    let blessingMessage = "public.free.speedUp";
+
+    if (MultiLang && typeof MultiLang.msg === "function") {
+      try {
+        blessingMessage = MultiLang.msg("public.free.speedUp");
+      } catch (error) {
+        // ignore
+      }
+    }
+
+    function isBlessingPopupMessage(message) {
+      if (message == null) {
+        return false;
+      }
+
+      return String(message) === String(blessingMessage);
+    }
+
+    if (MyAlert && typeof MyAlert.show === "function" && !MyAlert.__callOfRomaOriginalShow) {
+      MyAlert.__callOfRomaOriginalShow = MyAlert.show;
+      MyAlert.show = function showWithoutBlessingPopup(message) {
+        if (isBlessingPopupMessage(message)) {
+          return;
+        }
+
+        return MyAlert.__callOfRomaOriginalShow.apply(this, arguments);
+      };
+    }
+
+    if (
+      MyAlert1
+      && MyAlert1.instance
+      && typeof MyAlert1.instance.show === "function"
+      && !MyAlert1.instance.__callOfRomaOriginalShow
+    ) {
+      MyAlert1.instance.__callOfRomaOriginalShow = MyAlert1.instance.show;
+      MyAlert1.instance.show = function showWithoutBlessingPopup(message) {
+        if (isBlessingPopupMessage(message)) {
+          return;
+        }
+
+        return MyAlert1.instance.__callOfRomaOriginalShow.apply(this, arguments);
+      };
+    }
+
+    window[PATCH_FLAG].blessingPopupSuppressed = true;
+    return true;
+  }
+
+  function patchBuildingControllerAutoFreeSpeed() {
+    const buildingController = getBuildingController();
+
+    if (!buildingController || !buildingController.constructor || !buildingController.constructor.prototype) {
+      return false;
+    }
+
+    const controllerPrototype = buildingController.constructor.prototype;
+
+    if (controllerPrototype.__callOfRomaAutoFreeSpeedPatched) {
+      return true;
+    }
+
+    function wrapArchitectureCallback(cityId, position, callback) {
+      return function wrappedArchitectureCallback(response) {
+        if (typeof callback === "function") {
+          callback.apply(this, arguments);
+        }
+
+        if (response && typeof response.isSuccess === "function" && response.isSuccess()) {
+          const player = getPlayerObj();
+
+          if (player && typeof player.getCastleObjById === "function") {
+            const castle = player.getCastleObjById(cityId);
+            const building = getBuildingAtPosition(castle, position);
+
+            if (building) {
+              scheduleAutoFreeBuildingSpeed(building, cityId);
+            }
+          }
+        }
+      };
+    }
+
+    const originalUpgradeArchitecture = controllerPrototype.upgradeArchitecture;
+
+    if (typeof originalUpgradeArchitecture === "function") {
+      controllerPrototype.upgradeArchitecture = function upgradeArchitectureWithAutoFreeSpeed(
+        cityId,
+        position,
+        callback
+      ) {
+        return originalUpgradeArchitecture.call(
+          this,
+          cityId,
+          position,
+          wrapArchitectureCallback(cityId, position, callback)
+        );
+      };
+    }
+
+    const originalConsNewBuilding = controllerPrototype.consNewBuilding;
+
+    if (typeof originalConsNewBuilding === "function") {
+      controllerPrototype.consNewBuilding = function consNewBuildingWithAutoFreeSpeed(
+        cityId,
+        position,
+        buildingType,
+        callback
+      ) {
+        return originalConsNewBuilding.call(
+          this,
+          cityId,
+          position,
+          buildingType,
+          wrapArchitectureCallback(cityId, position, callback)
+        );
+      };
+    }
+
+    controllerPrototype.__callOfRomaAutoFreeSpeedPatched = true;
+    return true;
+  }
+
+  function patchBaseBuildingAutoFreeSpeed() {
+    const BaseBuilding = getBaseBuildingClass();
+
+    if (!BaseBuilding || !BaseBuilding.prototype) {
+      return false;
+    }
+
+    const buildingPrototype = BaseBuilding.prototype;
+
+    if (buildingPrototype.__callOfRomaUpdateArchitectureBeanPatched) {
+      return true;
+    }
+
+    const originalUpdateArchitectureBean = buildingPrototype.updateArchitectureBean;
+
+    if (typeof originalUpdateArchitectureBean !== "function") {
+      return false;
+    }
+
+    buildingPrototype.__callOfRomaUpdateArchitectureBeanPatched = true;
+    buildingPrototype.updateArchitectureBean = function updateArchitectureBeanWithAutoFreeSpeed(bean) {
+      const result = originalUpdateArchitectureBean.apply(this, arguments);
+      scheduleAutoFreeBuildingSpeed(this);
+      return result;
+    };
+
+    return true;
+  }
+
+  function patchBuildingStatusAutoFreeSpeedListener() {
+    const EvtDispacther = getEvtDispatcher();
+    const BuildingStatusChangeEvent = getBuildingStatusChangeEventClass();
+
+    if (
+      !EvtDispacther
+      || typeof EvtDispacther.addEventListener !== "function"
+      || !BuildingStatusChangeEvent
+      || !BuildingStatusChangeEvent.EVENT_NAME
+      || window[PATCH_FLAG].autoFreeBuildingSpeedListener
+    ) {
+      return Boolean(window[PATCH_FLAG].autoFreeBuildingSpeedListener);
+    }
+
+    EvtDispacther.addEventListener(
+      BuildingStatusChangeEvent.EVENT_NAME,
+      function onBuildingStatusChangeForAutoFreeSpeed(event) {
+        const building = event && (event.buildingObj || event.data);
+
+        if (building) {
+          scheduleAutoFreeBuildingSpeed(building);
+        }
+      }
+    );
+
+    window[PATCH_FLAG].autoFreeBuildingSpeedListener = true;
+    return true;
+  }
+
+  function patchAutoFreeBuildingSpeed() {
+    if (window[PATCH_FLAG].autoFreeBuildingSpeed) {
+      return true;
+    }
+
+    patchBlessingPopupSuppression();
+
+    const controllerPatched = patchBuildingControllerAutoFreeSpeed();
+    const buildingPatched = patchBaseBuildingAutoFreeSpeed();
+    const listenerPatched = patchBuildingStatusAutoFreeSpeedListener();
+
+    if (!controllerPatched && !buildingPatched) {
+      return false;
+    }
+
+    window[PATCH_FLAG].autoFreeBuildingSpeed = true;
+    return listenerPatched || controllerPatched || buildingPatched;
+  }
+
   function isBarracksBuilding(building) {
     const BuildingConstant = getBuildingConstant();
 
@@ -1012,6 +1549,8 @@
     if (autoBuildEnabled) {
       runAutoBuildTick();
     }
+
+    saveAfKSettings();
   }
 
   function setAutoBuildEnabled(enabled) {
@@ -1024,6 +1563,8 @@
     } else {
       stopAutoBuildTimer();
     }
+
+    saveAfKSettings();
   }
 
   function toggleAutoBuildEnabled() {
@@ -1187,6 +1728,16 @@
       "}",
       "#" + DUMMY_LOAD_BUTTON_ID + " {",
       "  min-width: 56px;",
+      "}",
+      "#" + HERO_GEAR_PANEL_ID + " {",
+      "  display: flex !important;",
+      "  align-items: center;",
+      "  gap: 4px;",
+      "  pointer-events: auto;",
+      "}",
+      "#" + HERO_GEAR_UNEQUIP_ALL_BUTTON_ID + ",",
+      "#" + HERO_GEAR_BEST_EQUIP_BUTTON_ID + " {",
+      "  min-width: 72px;",
       "}"
     ].join("\n");
     document.head.appendChild(style);
@@ -1583,6 +2134,8 @@
     if (autoJobEnabled) {
       runAutoJobTick();
     }
+
+    saveAfKSettings();
   }
 
   function setAutoJobEnabled(enabled) {
@@ -1595,6 +2148,8 @@
     } else {
       stopAutoJobTimer();
     }
+
+    saveAfKSettings();
   }
 
   function toggleAutoJobEnabled() {
@@ -2232,6 +2787,709 @@
     tryUnloadHero(0);
   }
 
+  function getEquipHelper() {
+    return window.views
+      && window.views.windows
+      && window.views.windows.functionWins
+      && window.views.windows.functionWins.hero
+      && window.views.windows.functionWins.hero.EquipHelper
+      && window.views.windows.functionWins.hero.EquipHelper.instance;
+  }
+
+  function getEquipBeanConstructor() {
+    return window.roma
+      && window.roma.common
+      && window.roma.common.valueObject
+      && window.roma.common.valueObject.EquipBean;
+  }
+
+  function isEquipResponseSuccess(response) {
+    if (!response) {
+      return true;
+    }
+
+    if (typeof response.isSuccess === "function") {
+      return response.isSuccess();
+    }
+
+    if (typeof response.success === "boolean") {
+      return response.success;
+    }
+
+    if (response.ok != null) {
+      return response.ok === 1 || response.ok === true;
+    }
+
+    return true;
+  }
+
+  function showEquipResponseError(response) {
+    showArmyResponseError(response);
+  }
+
+  function syncHeroForGear(hero) {
+    const heroHelper = getHeroHelper();
+
+    if (heroHelper && hero) {
+      heroHelper.curSelectHero = hero;
+    }
+  }
+
+  function getHeroCityIdForGear(hero) {
+    if (hero && hero.castleObj && hero.castleObj.cityId != null) {
+      return toInt(hero.castleObj.cityId);
+    }
+
+    return getHeroCityId(hero);
+  }
+
+  function isHeroEligibleForGear(hero) {
+    if (!hero) {
+      return false;
+    }
+
+    if (hero.isInCastle === true) {
+      return true;
+    }
+
+    const HeroManConstants = getHeroManConstants();
+
+    if (
+      HeroManConstants
+      && hero.heroInfo
+      && hero.heroInfo.status === HeroManConstants.STATUS_GROWTH
+    ) {
+      return true;
+    }
+
+    return hero.isInCastle !== false;
+  }
+
+  function getHeroLevel(hero) {
+    if (hero && hero.heroInfo && hero.heroInfo.level != null) {
+      return toInt(hero.heroInfo.level);
+    }
+
+    if (hero && hero.lv != null) {
+      return toInt(hero.lv);
+    }
+
+    return 0;
+  }
+
+  function getHeroPot(hero) {
+    if (hero && hero.heroInfo && hero.heroInfo.potentiality != null) {
+      return toInt(hero.heroInfo.potentiality);
+    }
+
+    return toInt(hero && hero.pot);
+  }
+
+  function canHeroWearEquip(hero, equip) {
+    if (!hero || !equip) {
+      return false;
+    }
+
+    return getHeroLevel(hero) >= toInt(equip.level)
+      && getHeroPot(hero) >= toInt(equip.pot);
+  }
+
+  function isTimedEquipUsable(equip) {
+    if (!equip || !equip.willExpired) {
+      return true;
+    }
+
+    const gameContext = getGameContext();
+    const serverNewEquip = gameContext
+      && gameContext.instance
+      && gameContext.instance.serverNewEquip;
+
+    if (serverNewEquip == null) {
+      return true;
+    }
+
+    return Number(equip.expiredTime) > Number(serverNewEquip);
+  }
+
+  function compareEquipStrength(leftEquip, rightEquip) {
+    const leftSort = toInt(leftEquip && leftEquip.sort);
+    const rightSort = toInt(rightEquip && rightEquip.sort);
+
+    if (leftSort !== rightSort) {
+      return leftSort - rightSort;
+    }
+
+    return toInt(leftEquip && leftEquip.attack) - toInt(rightEquip && rightEquip.attack);
+  }
+
+  function collectCollectionItems(collection) {
+    const items = [];
+
+    if (!collection || typeof collection.length !== "number") {
+      return items;
+    }
+
+    for (let index = 0; index < collection.length; index += 1) {
+      const item = typeof collection.getItemAt === "function"
+        ? collection.getItemAt(index)
+        : collection[index];
+
+      if (item) {
+        items.push(item);
+      }
+    }
+
+    return items;
+  }
+
+  function collectHeroEquipsResponse(response) {
+    const items = [];
+    const worn = response && response.equipsArray;
+
+    if (!worn || typeof worn.length !== "number") {
+      return items;
+    }
+
+    for (let index = 0; index < worn.length; index += 1) {
+      const item = typeof worn.getItemAt === "function"
+        ? worn.getItemAt(index)
+        : worn[index];
+
+      if (item) {
+        items.push(item);
+      }
+    }
+
+    return items;
+  }
+
+  function fetchHeroWornEquips(cityId, heroId, callback) {
+    const equipController = getEquipController();
+
+    if (!equipController || typeof equipController.getHeroEquips !== "function") {
+      callback([]);
+      return;
+    }
+
+    equipController.getHeroEquips(
+      cityId,
+      heroId,
+      function loadHeroWornEquipsCallback(response) {
+        if (!isEquipResponseSuccess(response)) {
+          showEquipResponseError(response);
+          callback([]);
+          return;
+        }
+
+        callback(collectHeroEquipsResponse(response));
+      },
+      false
+    );
+  }
+
+  function buildUnequipSocketParams(heroEquip, equipHelper) {
+    const equipType = heroEquip.equipType != null ? heroEquip.equipType : heroEquip.type;
+    const template = equipHelper && typeof equipHelper.getEquipsBeanById === "function"
+      ? equipHelper.getEquipsBeanById(equipType)
+      : null;
+
+    if (template) {
+      return {
+        typeId: template.type,
+        indexId: template.willExpired
+      };
+    }
+
+    return {
+      typeId: equipType,
+      indexId: heroEquip.expiredTime > 0 ? heroEquip.expiredTime : 0
+    };
+  }
+
+  function mapWornHeroEquipsByPart(heroWornList, equipHelper) {
+    const byPart = Object.create(null);
+
+    for (let index = 0; index < heroWornList.length; index += 1) {
+      const heroEquip = heroWornList[index];
+      const equipType = heroEquip.equipType != null ? heroEquip.equipType : heroEquip.type;
+      const template = equipHelper && typeof equipHelper.getEquipsBeanById === "function"
+        ? equipHelper.getEquipsBeanById(equipType)
+        : null;
+
+      if (!template) {
+        continue;
+      }
+
+      const part = toInt(template.part);
+
+      if (part >= 0 && part <= HERO_OUTFIT_SLOT_MAX) {
+        byPart[part] = template;
+      }
+    }
+
+    return byPart;
+  }
+
+  function mapEquipsByPart(equips) {
+    const byPart = Object.create(null);
+
+    for (let index = 0; index < equips.length; index += 1) {
+      const equip = equips[index];
+      const part = toInt(equip && equip.part);
+
+      if (part >= 0 && part <= HERO_OUTFIT_SLOT_MAX) {
+        byPart[part] = equip;
+      }
+    }
+
+    return byPart;
+  }
+
+  function createInventoryEquipBean(equipHelper, stackEntry, timedEntry) {
+    const EquipBean = getEquipBeanConstructor();
+    const bean = EquipBean ? new EquipBean() : {};
+
+    if (typeof equipHelper.getequipNewBean === "function") {
+      equipHelper.getequipNewBean(bean, stackEntry);
+    } else {
+      const template = equipHelper.getEquipsBeanById(stackEntry.typeId);
+
+      if (!template) {
+        return null;
+      }
+
+      Object.assign(bean, template);
+    }
+
+    if (timedEntry) {
+      bean.equipIndex = timedEntry.validIndex;
+      bean.expiredTime = timedEntry.expiredTime;
+    } else if (bean.equipIndex == null) {
+      bean.equipIndex = 0;
+    }
+
+    return bean;
+  }
+
+  function expandPlayerInventoryEquips(equipHelper) {
+    const inventory = [];
+    const playerEquips = equipHelper && equipHelper.playerEquipsArray;
+    const ArrayCollection = window.eui && window.eui.ArrayCollection;
+
+    if (
+      equipHelper
+      && ArrayCollection
+      && playerEquips
+      && typeof playerEquips.length === "number"
+      && playerEquips.length > 0
+      && equipHelper.equipsArray
+      && equipHelper.equipsArray.length > 0
+      && typeof equipHelper.getAllEquipsBeanToTarget === "function"
+    ) {
+      const tempCollection = new ArrayCollection();
+      equipHelper.getAllEquipsBeanToTarget(tempCollection);
+      return collectCollectionItems(tempCollection);
+    }
+
+    if (
+      !equipHelper
+      || !playerEquips
+      || typeof playerEquips.length !== "number"
+    ) {
+      return inventory;
+    }
+
+    for (let index = 0; index < playerEquips.length; index += 1) {
+      const stackEntry = typeof playerEquips.getItemAt === "function"
+        ? playerEquips.getItemAt(index)
+        : playerEquips[index];
+
+      if (!stackEntry || toInt(stackEntry.value) <= 0) {
+        continue;
+      }
+
+      if (stackEntry.validTimeArray && stackEntry.validTimeArray.length > 0) {
+        for (let timedIndex = 0; timedIndex < stackEntry.validTimeArray.length; timedIndex += 1) {
+          const timedEntry = stackEntry.validTimeArray[timedIndex];
+          const bean = createInventoryEquipBean(equipHelper, stackEntry, timedEntry);
+
+          if (bean) {
+            inventory.push(bean);
+          }
+        }
+        continue;
+      }
+
+      const stackCount = toInt(stackEntry.value);
+
+      for (let copyIndex = 0; copyIndex < stackCount; copyIndex += 1) {
+        const bean = createInventoryEquipBean(equipHelper, stackEntry, null);
+
+        if (bean) {
+          inventory.push(bean);
+        }
+      }
+    }
+
+    return inventory;
+  }
+
+  function pickBestInventoryEquipsByPart(inventory, hero) {
+    const bestByPart = Object.create(null);
+
+    for (let index = 0; index < inventory.length; index += 1) {
+      const equip = inventory[index];
+      const part = toInt(equip && equip.part);
+
+      if (part < 0 || part > HERO_OUTFIT_SLOT_MAX) {
+        continue;
+      }
+
+      if (!canHeroWearEquip(hero, equip) || !isTimedEquipUsable(equip)) {
+        continue;
+      }
+
+      const currentBest = bestByPart[part];
+
+      if (!currentBest || compareEquipStrength(equip, currentBest) > 0) {
+        bestByPart[part] = equip;
+      }
+    }
+
+    return bestByPart;
+  }
+
+  function buildBestEquipActions(wornByPart, bestByPart) {
+    const actions = [];
+
+    for (let part = 0; part <= HERO_OUTFIT_SLOT_MAX; part += 1) {
+      const candidate = bestByPart[part];
+
+      if (!candidate || candidate.type == null) {
+        continue;
+      }
+
+      const worn = wornByPart[part];
+
+      if (worn && compareEquipStrength(candidate, worn) <= 0) {
+        continue;
+      }
+
+      actions.push({
+        type: candidate.type,
+        equipIndex: candidate.equipIndex == null ? "0" : String(candidate.equipIndex)
+      });
+    }
+
+    return actions;
+  }
+
+  function refreshHeroAndBagEquips(cityId, heroId, hero) {
+    const equipHelper = getEquipHelper();
+
+    if (typeof equipHelper.getPlayerEquip === "function") {
+      equipHelper.getPlayerEquip();
+    }
+
+    fetchHeroWornEquips(cityId, heroId, function refreshHeroWornDone() {
+      if (hero && typeof hero.updateHeroObj === "function") {
+        hero.updateHeroObj();
+      }
+    });
+  }
+
+  function withPlayerInventory(callback) {
+    const equipHelper = getEquipHelper();
+    const equipController = getEquipController();
+
+    if (!equipHelper || !equipController) {
+      callback([]);
+      return;
+    }
+
+    function finishWithInventory() {
+      callback(expandPlayerInventoryEquips(equipHelper));
+    }
+
+    if (typeof equipController.getPlayerEquips === "function") {
+      equipController.getPlayerEquips(
+        function loadPlayerInventoryCallback(response) {
+          if (isEquipResponseSuccess(response) && response.equipsArray) {
+            equipHelper.playerEquipsArray = response.equipsArray;
+
+            if (equipHelper.playerEquipWithCount && typeof equipHelper.playerEquipWithCount.removeAll === "function") {
+              equipHelper.playerEquipWithCount.removeAll();
+
+              for (let index = 0; index < response.equipsArray.length; index += 1) {
+                const stackEntry = typeof response.equipsArray.getItemAt === "function"
+                  ? response.equipsArray.getItemAt(index)
+                  : response.equipsArray[index];
+
+                if (stackEntry && toInt(stackEntry.value) > 0) {
+                  equipHelper.playerEquipWithCount.addItem(stackEntry);
+                }
+              }
+            }
+          }
+
+          finishWithInventory();
+        },
+        false
+      );
+      return;
+    }
+
+    if (typeof equipHelper.getPlayerEquip === "function") {
+      equipHelper.getPlayerEquip();
+    }
+
+    window.setTimeout(finishWithInventory, 400);
+  }
+
+  function runEquipSocketActionQueue(actions, onComplete) {
+    let index = 0;
+    let attempts = 0;
+
+    function runNext() {
+      if (index >= actions.length) {
+        onComplete(true);
+        return;
+      }
+
+      const action = actions[index];
+
+      waitUntilSocketReady(function onEquipSocketReady(ready) {
+        if (!ready) {
+          attempts += 1;
+
+          if (attempts >= DUMMY_ASSIGN_MAX_ATTEMPTS) {
+            onComplete(false);
+            return;
+          }
+
+          window.setTimeout(runNext, DUMMY_ASSIGN_RETRY_DELAY_MS);
+          return;
+        }
+
+        action(function onEquipActionFinished(success, response) {
+          if (!success) {
+            attempts += 1;
+
+            if (attempts >= DUMMY_ASSIGN_MAX_ATTEMPTS) {
+              if (response) {
+                showEquipResponseError(response);
+              }
+
+              onComplete(false);
+              return;
+            }
+
+            window.setTimeout(runNext, DUMMY_ASSIGN_RETRY_DELAY_MS * Math.min(attempts, 5));
+            return;
+          }
+
+          attempts = 0;
+          index += 1;
+          window.setTimeout(runNext, HERO_GEAR_SOCKET_STEP_DELAY_MS);
+        });
+      }, DUMMY_SOCKET_READY_TIMEOUT_MS);
+    }
+
+    runNext();
+  }
+
+  function getHeroGearBatchContext() {
+    if (!isAfKModeGameFrame() || !getPlayerObj()) {
+      return null;
+    }
+
+    const hero = getSelectedHeroObj();
+    const cityId = getHeroCityIdForGear(hero);
+    const heroId = getHeroId(hero);
+
+    if (!hero || cityId == null || heroId == null || !isHeroEligibleForGear(hero)) {
+      return null;
+    }
+
+    syncHeroForGear(hero);
+
+    return {
+      hero: hero,
+      cityId: cityId,
+      heroId: heroId,
+      equipHelper: getEquipHelper()
+    };
+  }
+
+  function finishHeroGearBatch(context) {
+    heroGearBatchInProgress = false;
+
+    if (context) {
+      refreshHeroAndBagEquips(context.cityId, context.heroId, context.hero);
+    }
+  }
+
+  function unequipAllHeroGear() {
+    if (heroGearBatchInProgress || dummyLoadInProgress) {
+      return;
+    }
+
+    const context = getHeroGearBatchContext();
+    const equipController = getEquipController();
+
+    if (!context || !equipController || typeof equipController.removeHeroEquip !== "function") {
+      return;
+    }
+
+    heroGearBatchInProgress = true;
+
+    fetchHeroWornEquips(context.cityId, context.heroId, function startUnequipAll(wornEquips) {
+      if (wornEquips.length === 0) {
+        finishHeroGearBatch(context);
+        return;
+      }
+
+      const actions = [];
+
+      for (let index = 0; index < wornEquips.length; index += 1) {
+        const heroEquip = wornEquips[index];
+        const socketParams = buildUnequipSocketParams(heroEquip, context.equipHelper);
+
+        actions.push(function unequipAction(done) {
+          equipController.removeHeroEquip(
+            context.cityId,
+            context.heroId,
+            socketParams.typeId,
+            socketParams.indexId,
+            function unequipCallback(response) {
+              done(isEquipResponseSuccess(response), response);
+            },
+            true
+          );
+        });
+      }
+
+      runEquipSocketActionQueue(actions, function unequipAllFinished() {
+        finishHeroGearBatch(context);
+      });
+    });
+  }
+
+  function autoEquipBestHeroGear() {
+    if (heroGearBatchInProgress || dummyLoadInProgress) {
+      return;
+    }
+
+    const context = getHeroGearBatchContext();
+    const equipController = getEquipController();
+
+    if (!context || !equipController || typeof equipController.equipForHero !== "function") {
+      return;
+    }
+
+    heroGearBatchInProgress = true;
+
+    fetchHeroWornEquips(context.cityId, context.heroId, function startAutoEquip(wornEquips) {
+      const wornByPart = mapWornHeroEquipsByPart(wornEquips, context.equipHelper);
+
+      withPlayerInventory(function onInventoryReady(inventory) {
+        const bestByPart = pickBestInventoryEquipsByPart(inventory, context.hero);
+        const equipActions = buildBestEquipActions(wornByPart, bestByPart);
+
+        if (equipActions.length === 0) {
+          finishHeroGearBatch(context);
+          return;
+        }
+
+        const actions = [];
+
+        for (let index = 0; index < equipActions.length; index += 1) {
+          const equipAction = equipActions[index];
+
+          actions.push(function equipActionRunner(done) {
+            equipController.equipForHero(
+              context.cityId,
+              context.heroId,
+              equipAction.type,
+              equipAction.equipIndex,
+              function equipCallback(response) {
+                done(isEquipResponseSuccess(response), response);
+              },
+              true
+            );
+          });
+        }
+
+        runEquipSocketActionQueue(actions, function autoEquipFinished() {
+          finishHeroGearBatch(context);
+        });
+      });
+    });
+  }
+
+  function ensureHeroGearPanel() {
+    const controls = ensureAfKControlsContainer();
+
+    if (!controls) {
+      return null;
+    }
+
+    ensureDummyPanel();
+
+    let panel = document.getElementById(HERO_GEAR_PANEL_ID);
+    const dummyPanel = document.getElementById(DUMMY_PANEL_ID);
+
+    if (panel && panel.parentElement !== controls) {
+      controls.appendChild(panel);
+    }
+
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = HERO_GEAR_PANEL_ID;
+      window[PATCH_FLAG].heroGearBatch = true;
+    }
+
+    if (dummyPanel) {
+      if (panel.parentElement !== controls || panel.previousElementSibling !== dummyPanel) {
+        controls.insertBefore(panel, dummyPanel.nextSibling);
+      }
+    } else if (panel.parentElement !== controls) {
+      controls.appendChild(panel);
+    }
+
+    let unequipButton = document.getElementById(HERO_GEAR_UNEQUIP_ALL_BUTTON_ID);
+
+    if (!unequipButton) {
+      unequipButton = document.createElement("button");
+      unequipButton.id = HERO_GEAR_UNEQUIP_ALL_BUTTON_ID;
+      unequipButton.type = "button";
+      unequipButton.className = "cor-afk-mode-btn";
+      unequipButton.textContent = "Strip";
+      unequipButton.title = "Unequip all gear from every slot on the selected hero";
+      unequipButton.addEventListener("click", unequipAllHeroGear);
+      panel.appendChild(unequipButton);
+    } else {
+      unequipButton.textContent = "Strip";
+    }
+
+    let bestEquipButton = document.getElementById(HERO_GEAR_BEST_EQUIP_BUTTON_ID);
+
+    if (!bestEquipButton) {
+      bestEquipButton = document.createElement("button");
+      bestEquipButton.id = HERO_GEAR_BEST_EQUIP_BUTTON_ID;
+      bestEquipButton.type = "button";
+      bestEquipButton.className = "cor-afk-mode-btn";
+      bestEquipButton.textContent = "Equip";
+      bestEquipButton.title = "Equip the strongest usable inventory gear in every slot for the selected hero";
+      bestEquipButton.addEventListener("click", autoEquipBestHeroGear);
+      panel.appendChild(bestEquipButton);
+    } else {
+      bestEquipButton.textContent = "Equip";
+    }
+
+    return panel;
+  }
+
   function ensureDummyCountInput(panel) {
     let countInput = document.getElementById(DUMMY_COUNT_INPUT_ID);
 
@@ -2290,9 +3548,17 @@
     return panel;
   }
 
+  loadAfKSettings();
+
   ensureAutoBuildControls();
   ensureAutoJobControls();
   ensureDummyPanel();
+  ensureHeroGearPanel();
+  applyStartupMuteSetting();
+  updateAutoBuildModeButton();
+  updateAutoBuildToggleButton();
+  updateAutoJobModeButton();
+  updateAutoJobToggleButton();
 
   window.setInterval(function keepAfKModeButtonsVisible() {
     if (!isAfKModeGameFrame()) {
@@ -2303,6 +3569,9 @@
     ensureAutoBuildControls();
     ensureAutoJobControls();
     ensureDummyPanel();
+    ensureHeroGearPanel();
+    applyStartupMuteSetting();
+    restorePersistedAfKModesWhenReady();
   }, 3000);
 
   const externalRechargeObserver = new MutationObserver(function removeInjectedRechargeAd() {
@@ -3480,6 +4749,8 @@
     installWebGLContextRecovery();
     ensureAutoBuildControls();
     ensureAutoJobControls();
+    applyStartupMuteSetting();
+    restorePersistedAfKModesWhenReady();
 
     const citySpritesPatched = patchWorldMapCitySprites();
     const arenaCleanupPatched = patchArenaReminderCleanup();
@@ -3490,6 +4761,7 @@
     const serverWildLevelCachePatched = patchServerWildLevelCache();
     const serverWildClearingFixPatched = patchServerWildClearingFunctionalFix();
     const heroTroopCapacityPatched = patchHeroTroopDisplayedCapacity();
+    patchAutoFreeBuildingSpeed();
 
     if (
       citySpritesPatched
