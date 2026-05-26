@@ -17,8 +17,8 @@
     questCountRefresh: false,
     questPopup: false,
     serverWildClearingFix: false,
-    cottageMode: false,
-    farmingMode: false,
+    autoBuild: false,
+    autoJob: false,
     dummyLoad: false,
     webglRecovery: false
   };
@@ -26,17 +26,35 @@
   const serverWildLevels = Object.create(null);
   const AFK_MODE_STYLE_ID = "cor-afk-mode-style";
   const AFK_CONTROLS_ID = "cor-afk-controls";
-  const COTTAGE_MODE_BUTTON_ID = "cor-cottage-mode-btn";
-  const FARMING_MODE_BUTTON_ID = "cor-farming-mode-btn";
+  const AUTO_BUILD_ROW_ID = "cor-auto-build-row";
+  const AUTO_BUILD_MODE_BUTTON_ID = "cor-auto-build-mode-btn";
+  const AUTO_BUILD_TOGGLE_BUTTON_ID = "cor-auto-build-toggle-btn";
+  const AUTO_JOB_ROW_ID = "cor-auto-job-row";
+  const AUTO_JOB_MODE_BUTTON_ID = "cor-auto-job-mode-btn";
+  const AUTO_JOB_TOGGLE_BUTTON_ID = "cor-auto-job-toggle-btn";
   const DUMMY_PANEL_ID = "cor-dummy-panel";
   const DUMMY_COUNT_INPUT_ID = "cor-dummy-count";
   const DUMMY_LOAD_BUTTON_ID = "cor-dummy-load-btn";
   const DUMMY_MELEE_ARMY_POSITIONS = [0, 1, 2];
   const DUMMY_RANGED_ARMY_POSITIONS = [3, 4, 5];
-  const COTTAGE_MODE_INTERVAL_MS = 2500;
-  const FARMING_MODE_INTERVAL_MS = 2500;
-  const COTTAGE_MODE_RETRY_MS = 1200;
-  const FARMING_MODE_RETRY_MS = 1200;
+  const AUTO_BUILD_INTERVAL_MS = 2500;
+  const AUTO_JOB_INTERVAL_MS = 2500;
+  const AUTO_BUILD_RETRY_MS = 1200;
+  const AUTO_JOB_RETRY_MS = 1200;
+  const AUTO_BUILD_SELECT_MODES = ["cottage", "any"];
+  const AUTO_JOB_SELECT_MODES = ["husbandry", "forestry", "gemology", "extractive", "lowest"];
+  const AUTO_BUILD_MODE_CONFIG = {
+    cottage: { label: "Cottage", title: "Auto-Build: upgrade lowest cottage in each city" },
+    any: { label: "Any", title: "Auto-Build: upgrade lowest building (barracks excluded)" }
+  };
+  const AUTO_JOB_MODE_CONFIG = {
+    husbandry: { label: "Farm", iconKey: "icon.food", resourceWorkerKey: "food", buildingTypeProp: "TYPE_FARM", workerTypeProp: "FARMER_WORKER_TYPE", title: "Husbandry: train farmers at farms" },
+    forestry: { label: "Wood", iconKey: "icon.wood", resourceWorkerKey: "wood", buildingTypeProp: "TYPE_SAWMILL", workerTypeProp: "WOODCUTTER_WORKER_TYPE", title: "Forestry: train woodcutters at sawmills" },
+    gemology: { label: "Stone", iconKey: "icon.stone", resourceWorkerKey: "stone", buildingTypeProp: "TYPE_QUARRY", workerTypeProp: "STONEMASON_WORKER_TYPE", title: "Gemology: train stonemasons at quarries" },
+    extractive: { label: "Iron", iconKey: "icon.iron", resourceWorkerKey: "iron", buildingTypeProp: "TYPE_MINE_IRON", workerTypeProp: "MINER_WORKER_TYPE", title: "Extractive: train miners at iron mines" },
+    lowest: { label: "Low", title: "Lowest jobs: train at whichever resource site has the fewest workers in each city" }
+  };
+  const AUTO_PRODUCTION_JOB_MODES = ["husbandry", "forestry", "gemology", "extractive"];
   const DUMMY_ASSIGN_STEP_DELAY_MS = 450;
   const DUMMY_ASSIGN_FAST_STEP_DELAY_MS = 120;
   const DUMMY_ASSIGN_RETRY_DELAY_MS = 300;
@@ -48,18 +66,20 @@
   const WEBGL_RECOVERY_STYLE_ID = "cor-webgl-recovery-style";
   const WEBGL_RECOVERY_RELOAD_PROMPT_MS = 8000;
   const WEBGL_RECOVERY_AUTO_RELOAD_AFTER_RESTORE_MS = 1200;
-  let cottageModeEnabled = false;
-  let cottageModeTimerId = null;
-  let cottageModeGateReason = "";
-  let farmingModeEnabled = false;
-  let farmingModeTimerId = null;
-  let farmingModeGateReason = "";
+  let autoBuildMode = "cottage";
+  let autoBuildEnabled = false;
+  let autoBuildTimerId = null;
+  let autoBuildGateReason = "";
+  let autoJobMode = "husbandry";
+  let autoJobEnabled = false;
+  let autoJobTimerId = null;
+  let autoJobGateReason = "";
   let dummyLoadInProgress = false;
   let webglContextLost = false;
   let webglRecoveryReloadPromptTimeoutId = null;
   let webglRecoveryAutoReloadTimeoutId = null;
-  let webglRecoverySuspendedCottage = false;
-  let webglRecoverySuspendedFarming = false;
+  let webglRecoverySuspendedAutoBuild = false;
+  let webglRecoverySuspendedAutoJob = false;
 
   function removeExternalRechargeAd() {
     let removed = false;
@@ -164,16 +184,276 @@
       return window.GameRuleHelper.instance;
     }
 
-    return window.roma
-      && window.roma.common
-      && window.roma.common.GameRuleHelper
-      && window.roma.common.GameRuleHelper.instance;
+    return (window.roma
+      && window.roma.logic
+      && window.roma.logic.rule
+      && window.roma.logic.rule.GameRuleHelper
+      && window.roma.logic.rule.GameRuleHelper.instance)
+      || (window.roma
+        && window.roma.common
+        && window.roma.common.GameRuleHelper
+        && window.roma.common.GameRuleHelper.instance);
   }
 
   function getProduceResourceDataClass() {
     return window.roma
       && window.roma.data
       && window.roma.data.ProduceResourceData;
+  }
+
+  function getRomaConstants() {
+    return window.roma && window.roma.logic && window.roma.logic.RomaConstants;
+  }
+
+  function getImgManager() {
+    return window.ImgManager
+      || (window.roma
+        && window.roma.resource
+        && window.roma.resource.ImgManager);
+  }
+
+  function resolveGameIconUrl(iconKey) {
+    if (!iconKey) {
+      return null;
+    }
+
+    const ImgManager = getImgManager();
+
+    if (!ImgManager || typeof ImgManager.clazz !== "function") {
+      return null;
+    }
+
+    const clazz = ImgManager.clazz(iconKey);
+
+    if (!clazz) {
+      return null;
+    }
+
+    if (typeof clazz === "string" && /\.(png|jpe?g|webp|gif)(\?|$)/i.test(clazz)) {
+      return clazz;
+    }
+
+    const RES = window.RES;
+
+    if (RES && typeof RES.getRes === "function") {
+      const resource = RES.getRes(clazz);
+
+      if (typeof resource === "string") {
+        return resource;
+      }
+
+      if (resource && resource.url) {
+        return resource.url;
+      }
+
+      if (resource && resource._bitmapData && resource._bitmapData.source) {
+        return resource._bitmapData.source;
+      }
+    }
+
+    return null;
+  }
+
+  function readResourceStock(resourceNode) {
+    if (resourceNode == null) {
+      return 0;
+    }
+
+    if (typeof resourceNode === "number") {
+      return toInt(resourceNode);
+    }
+
+    if (resourceNode.curAmount != null) {
+      return toInt(resourceNode.curAmount);
+    }
+
+    if (resourceNode.amount != null) {
+      return toInt(resourceNode.amount);
+    }
+
+    return toInt(resourceNode);
+  }
+
+  function getCastleResourceAmount(castle, resType) {
+    const RomaConstants = getRomaConstants();
+    const resourceManager = castle && castle.resourceManager;
+
+    if (!RomaConstants || !resourceManager) {
+      return 0;
+    }
+
+    if (resType === RomaConstants.RES_TYPE_FOOD) {
+      return readResourceStock(resourceManager.food);
+    }
+
+    if (resType === RomaConstants.RES_TYPE_WOOD) {
+      return readResourceStock(resourceManager.wood);
+    }
+
+    if (resType === RomaConstants.RES_TYPE_STONE) {
+      return readResourceStock(resourceManager.stone);
+    }
+
+    if (resType === RomaConstants.RES_TYPE_IRON) {
+      return readResourceStock(resourceManager.iron);
+    }
+
+    if (resType === RomaConstants.RES_TYPE_GOLD) {
+      return readResourceStock(resourceManager.golds || resourceManager.gold);
+    }
+
+    return 0;
+  }
+
+  function hasSufficientResourcesForChecks(resourceChecks, castle, multiplier) {
+    const trainCount = Math.max(1, toInt(multiplier));
+
+    if (!resourceChecks || !castle) {
+      return true;
+    }
+
+    for (let index = 0; index < resourceChecks.length; index += 1) {
+      const check = resourceChecks[index];
+
+      if (!check) {
+        continue;
+      }
+
+      const requiredPerUnit = toInt(check.reqNum);
+
+      if (requiredPerUnit <= 0) {
+        continue;
+      }
+
+      const available = getCastleResourceAmount(castle, toInt(check.type));
+
+      if (available < requiredPerUnit * trainCount) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function getUpgradeResourceChecks(ruleCheckResult) {
+    const checks = [];
+
+    if (!ruleCheckResult) {
+      return checks;
+    }
+
+    if (ruleCheckResult.resConditionArray && ruleCheckResult.resConditionArray.length > 0) {
+      for (let index = 0; index < ruleCheckResult.resConditionArray.length; index += 1) {
+        if (ruleCheckResult.resConditionArray[index]) {
+          checks.push(ruleCheckResult.resConditionArray[index]);
+        }
+      }
+
+      return checks;
+    }
+
+    const directChecks = [
+      ruleCheckResult.food,
+      ruleCheckResult.wood,
+      ruleCheckResult.stone,
+      ruleCheckResult.iron,
+      ruleCheckResult.golds
+    ];
+
+    for (let index = 0; index < directChecks.length; index += 1) {
+      if (directChecks[index]) {
+        checks.push(directChecks[index]);
+      }
+    }
+
+    return checks;
+  }
+
+  function calcMaxAffordableCountFromRuleCheck(ruleCheckResult, castle) {
+    if (!ruleCheckResult || !castle) {
+      return 0;
+    }
+
+    const resourceChecks = getUpgradeResourceChecks(ruleCheckResult);
+    let maxCount = Number.POSITIVE_INFINITY;
+    let hasResourceCost = false;
+
+    for (let index = 0; index < resourceChecks.length; index += 1) {
+      const check = resourceChecks[index];
+
+      if (!check) {
+        continue;
+      }
+
+      const requiredPerUnit = toInt(check.reqNum);
+
+      if (requiredPerUnit <= 0) {
+        continue;
+      }
+
+      hasResourceCost = true;
+      const available = getCastleResourceAmount(castle, toInt(check.type));
+      maxCount = Math.min(maxCount, Math.floor(available / requiredPerUnit));
+    }
+
+    if (!hasResourceCost) {
+      return 1;
+    }
+
+    if (!Number.isFinite(maxCount)) {
+      return 0;
+    }
+
+    return Math.max(0, maxCount);
+  }
+
+  function getTargetCastleForBuilding(building, castle) {
+    if (building && building.castle) {
+      return building.castle;
+    }
+
+    return castle || null;
+  }
+
+  function getNextBuildingUpgradeRule(building) {
+    const ruleHelper = getGameRuleHelper();
+
+    if (!ruleHelper || typeof ruleHelper.getBuildingRule !== "function" || !building) {
+      return null;
+    }
+
+    try {
+      return ruleHelper.getBuildingRule(toInt(building.typeId), toInt(building.level) + 1);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function castleCanAffordUpgradeRule(castle, upgradeRule) {
+    const RomaConstants = getRomaConstants();
+
+    if (!castle || !upgradeRule || !RomaConstants) {
+      return false;
+    }
+
+    const costs = [
+      [toInt(upgradeRule.costFood), RomaConstants.RES_TYPE_FOOD],
+      [toInt(upgradeRule.costWood), RomaConstants.RES_TYPE_WOOD],
+      [toInt(upgradeRule.costStone), RomaConstants.RES_TYPE_STONE],
+      [toInt(upgradeRule.costIron), RomaConstants.RES_TYPE_IRON],
+      [toInt(upgradeRule.costGold), RomaConstants.RES_TYPE_GOLD]
+    ];
+
+    for (let index = 0; index < costs.length; index += 1) {
+      const required = costs[index][0];
+      const resType = costs[index][1];
+
+      if (required > 0 && getCastleResourceAmount(castle, resType) < required) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   function getGameContextEarly() {
@@ -218,7 +498,41 @@
     return true;
   }
 
-  function updateAfKModeButton(buttonId, enabled, activeClass) {
+  function cycleAutoMode(currentMode, modes) {
+    const currentIndex = modes.indexOf(currentMode);
+    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % modes.length;
+
+    return modes[nextIndex];
+  }
+
+  function clearAutoModeButtonContent(button) {
+    while (button.firstChild) {
+      button.removeChild(button.firstChild);
+    }
+  }
+
+  function setAutoModeButtonLabel(button, labelText) {
+    const label = document.createElement("span");
+    label.className = "cor-auto-mode-label";
+    label.textContent = labelText;
+    button.appendChild(label);
+  }
+
+  function setAutoModeButtonIcon(button, iconKey) {
+    const iconUrl = resolveGameIconUrl(iconKey);
+
+    if (!iconUrl) {
+      return;
+    }
+
+    const icon = document.createElement("img");
+    icon.className = "cor-auto-mode-icon";
+    icon.alt = "";
+    icon.src = iconUrl;
+    button.insertBefore(icon, button.firstChild);
+  }
+
+  function updateAutoToggleButton(buttonId, enabled, activeClass) {
     const button = document.getElementById(buttonId);
 
     if (!button) {
@@ -226,6 +540,7 @@
     }
 
     button.textContent = enabled ? "ON" : "OFF";
+    button.title = enabled ? "Click to turn OFF" : "Click to turn ON";
 
     if (enabled) {
       button.classList.add(activeClass);
@@ -234,6 +549,70 @@
       button.classList.remove(activeClass);
       button.setAttribute("aria-pressed", "false");
     }
+  }
+
+  function updateAutoBuildModeButton() {
+    const button = document.getElementById(AUTO_BUILD_MODE_BUTTON_ID);
+
+    if (!button) {
+      return;
+    }
+
+    clearAutoModeButtonContent(button);
+
+    const config = AUTO_BUILD_MODE_CONFIG[autoBuildMode] || AUTO_BUILD_MODE_CONFIG.cottage;
+
+    setAutoModeButtonLabel(button, config.label);
+    button.title = config.title + " (click to change mode)";
+  }
+
+  function updateAutoBuildToggleButton() {
+    updateAutoToggleButton(
+      AUTO_BUILD_TOGGLE_BUTTON_ID,
+      autoBuildEnabled,
+      "cor-auto-build-toggle-on"
+    );
+
+    const button = document.getElementById(AUTO_BUILD_TOGGLE_BUTTON_ID);
+
+    if (!button) {
+      return;
+    }
+
+    const modeConfig = AUTO_BUILD_MODE_CONFIG[autoBuildMode] || AUTO_BUILD_MODE_CONFIG.cottage;
+
+    if (autoBuildEnabled) {
+      button.title = modeConfig.title + " is ON (click to turn OFF)";
+    } else {
+      button.title = "Auto-Build is OFF — pick " + modeConfig.label + " mode, then click ON";
+    }
+  }
+
+  function updateAutoJobModeButton() {
+    const button = document.getElementById(AUTO_JOB_MODE_BUTTON_ID);
+
+    if (!button) {
+      return;
+    }
+
+    clearAutoModeButtonContent(button);
+
+    const config = AUTO_JOB_MODE_CONFIG[autoJobMode] || AUTO_JOB_MODE_CONFIG.husbandry;
+
+    if (config.iconKey) {
+      setAutoModeButtonIcon(button, config.iconKey);
+    }
+
+    setAutoModeButtonLabel(button, config.label || autoJobMode);
+    button.title = (config.title || "Auto-Job") + " (click to change mode)";
+  }
+
+  function updateAutoJobToggleButton() {
+    updateAutoToggleButton(
+      AUTO_JOB_TOGGLE_BUTTON_ID,
+      autoJobEnabled,
+      "cor-auto-job-toggle-on"
+    );
   }
 
   function hasLoadedPlayerWorld(player) {
@@ -409,22 +788,26 @@
     return houses;
   }
 
-  function canUpgradeHouse(house) {
-    if (!house || typeof house.isConstructing !== "function" || house.isConstructing()) {
+  function canUpgradeBuilding(building, castle) {
+    if (!building || typeof building.isConstructing !== "function" || building.isConstructing()) {
       return false;
     }
 
-    if (typeof house.getRuleCheckResultForUpgrade !== "function") {
-      return true;
-    }
+    const targetCastle = getTargetCastleForBuilding(building, castle);
+    const BuildingConstant = getBuildingConstant();
+    const level = toInt(building.level);
 
-    const ruleCheckResult = house.getRuleCheckResultForUpgrade();
-
-    if (ruleCheckResult == null) {
+    if (BuildingConstant && level >= toInt(BuildingConstant.HIGHEST_LEVEL)) {
       return false;
     }
 
-    return ruleCheckResult.isMatch === true;
+    const upgradeRule = getNextBuildingUpgradeRule(building);
+
+    if (!upgradeRule) {
+      return false;
+    }
+
+    return castleCanAffordUpgradeRule(targetCastle, upgradeRule);
   }
 
   function getHouseCityId(house, castle) {
@@ -439,18 +822,15 @@
     return null;
   }
 
-  function requestCottageUpgrade(house, castle) {
-    if (typeof house.upgrade === "function") {
-      house.upgrade();
-      return true;
-    }
-
+  function requestBuildingUpgrade(building, castle) {
     const buildingController = getBuildingController();
-    const cityId = getHouseCityId(house, castle);
+    const cityId = getHouseCityId(building, castle);
+    const position = building.position != null ? building.position : building.positionId;
 
     if (
       !buildingController
       || cityId == null
+      || position == null
       || typeof buildingController.upgradeArchitecture !== "function"
     ) {
       return false;
@@ -458,10 +838,10 @@
 
     buildingController.upgradeArchitecture(
       cityId,
-      house.position,
-      function cottageModeUpgradeCallback() {
-        if (cottageModeEnabled) {
-          window.setTimeout(runCottageModeTick, COTTAGE_MODE_RETRY_MS);
+      position,
+      function autoBuildUpgradeCallback() {
+        if (autoBuildEnabled) {
+          window.setTimeout(runAutoBuildTick, AUTO_BUILD_RETRY_MS);
         }
       },
       true
@@ -470,87 +850,141 @@
     return true;
   }
 
-  function findLowestUpgradeableCottage(castle) {
-    const houses = collectHouseBuildings(castle.buildingManager);
-    let lowestHouse = null;
-    let lowestLevel = Number.POSITIVE_INFINITY;
+  function isBarracksBuilding(building) {
+    const BuildingConstant = getBuildingConstant();
 
-    for (let index = 0; index < houses.length; index += 1) {
-      const house = houses[index];
+    if (!building || !BuildingConstant || BuildingConstant.TYPE_BARRACKS == null) {
+      return false;
+    }
 
-      if (!canUpgradeHouse(house)) {
-        continue;
-      }
+    return toInt(building.typeId) === toInt(BuildingConstant.TYPE_BARRACKS);
+  }
 
-      const level = toInt(house.level);
+  function collectCastleBuildings(buildingManager) {
+    const buildings = [];
 
-      if (level < lowestLevel) {
-        lowestLevel = level;
-        lowestHouse = house;
+    if (!buildingManager) {
+      return buildings;
+    }
+
+    const allBuilding = buildingManager.allBuilding;
+
+    if (allBuilding && typeof allBuilding.length === "number") {
+      for (let index = 0; index < allBuilding.length; index += 1) {
+        if (allBuilding[index]) {
+          buildings.push(allBuilding[index]);
+        }
       }
     }
 
-    return lowestHouse;
+    if (buildingManager.townHall) {
+      buildings.push(buildingManager.townHall);
+    }
+
+    if (buildingManager.wall) {
+      buildings.push(buildingManager.wall);
+    }
+
+    return buildings;
   }
 
-  function listCottageUpgradeCandidates() {
+  function findLowestUpgradeableBuilding(castle, buildingFilter) {
+    const buildingManager = castle && castle.buildingManager;
+
+    if (!buildingManager) {
+      return null;
+    }
+
+    const buildings = typeof buildingFilter === "function"
+      ? buildingFilter(buildingManager)
+      : collectCastleBuildings(buildingManager);
+    let lowestBuilding = null;
+    let lowestLevel = Number.POSITIVE_INFINITY;
+
+    for (let index = 0; index < buildings.length; index += 1) {
+      const building = buildings[index];
+
+      if (typeof buildingFilter !== "function" && isBarracksBuilding(building)) {
+        continue;
+      }
+
+      if (!canUpgradeBuilding(building, castle)) {
+        continue;
+      }
+
+      const level = toInt(building.level);
+
+      if (level < lowestLevel) {
+        lowestLevel = level;
+        lowestBuilding = building;
+      }
+    }
+
+    return lowestBuilding;
+  }
+
+  function listAutoBuildCandidates() {
     const player = getPlayerObj();
 
-    if (!player) {
+    if (!player || !autoBuildEnabled) {
       return [];
     }
 
     const constructLimit = getConstructLimit(player);
     const candidates = [];
 
-    forEachCastle(player, function collectCandidate(castle) {
+    forEachCastle(player, function collectBuildCandidate(castle) {
       if (!castle || getCastleIdleBuilderCount(castle, constructLimit) <= 0) {
         return;
       }
 
-      const cottage = findLowestUpgradeableCottage(castle);
+      let building = null;
 
-      if (!cottage) {
+      if (autoBuildMode === "cottage") {
+        building = findLowestUpgradeableBuilding(castle, function cottageFilter(manager) {
+          return collectHouseBuildings(manager);
+        });
+      } else if (autoBuildMode === "any") {
+        building = findLowestUpgradeableBuilding(castle);
+      }
+
+      if (!building) {
         return;
       }
 
       candidates.push({
         castle: castle,
-        cottage: cottage,
-        cityId: getHouseCityId(cottage, castle),
-        level: toInt(cottage.level)
+        building: building,
+        cityId: getHouseCityId(building, castle),
+        level: toInt(building.level)
       });
     });
 
-    candidates.sort(function sortByLowestCottageLevel(left, right) {
+    candidates.sort(function sortByLowestBuildingLevel(left, right) {
       return left.level - right.level;
     });
 
     return candidates;
   }
 
-  function updateCottageModeButton() {
-    updateAfKModeButton(COTTAGE_MODE_BUTTON_ID, cottageModeEnabled, "cor-cottage-on");
-  }
-
-  function stopCottageModeTimer() {
-    if (cottageModeTimerId !== null) {
-      window.clearInterval(cottageModeTimerId);
-      cottageModeTimerId = null;
+  function stopAutoBuildTimer() {
+    if (autoBuildTimerId !== null) {
+      window.clearInterval(autoBuildTimerId);
+      autoBuildTimerId = null;
     }
   }
 
-  function startCottageModeTimer() {
-    stopCottageModeTimer();
-    cottageModeTimerId = window.setInterval(runCottageModeTick, COTTAGE_MODE_INTERVAL_MS);
+  function startAutoBuildTimer() {
+    stopAutoBuildTimer();
+    autoBuildTimerId = window.setInterval(runAutoBuildTick, AUTO_BUILD_INTERVAL_MS);
   }
 
-  function runCottageModeTick() {
-    if (!cottageModeEnabled) {
+  function runAutoBuildTick() {
+    if (!autoBuildEnabled) {
       return;
     }
 
-    if (!isGameFrameReadyForCottageMode()) {
+    if (!isGameFrameReadyForAutoBuild()) {
       return;
     }
 
@@ -558,29 +992,63 @@
       return;
     }
 
-    const candidates = listCottageUpgradeCandidates();
+    const candidates = listAutoBuildCandidates();
 
     if (candidates.length === 0) {
       return;
     }
 
-    requestCottageUpgrade(candidates[0].cottage, candidates[0].castle);
+    requestBuildingUpgrade(candidates[0].building, candidates[0].castle);
   }
 
-  function setCottageModeEnabled(enabled) {
-    cottageModeEnabled = Boolean(enabled);
-    updateCottageModeButton();
+  function setAutoBuildMode(mode) {
+    if (AUTO_BUILD_SELECT_MODES.indexOf(mode) < 0) {
+      return;
+    }
 
-    if (cottageModeEnabled) {
-      runCottageModeTick();
-      startCottageModeTimer();
-    } else {
-      stopCottageModeTimer();
+    autoBuildMode = mode;
+    updateAutoBuildModeButton();
+
+    if (autoBuildEnabled) {
+      runAutoBuildTick();
     }
   }
 
-  function toggleCottageMode() {
-    setCottageModeEnabled(!cottageModeEnabled);
+  function setAutoBuildEnabled(enabled) {
+    autoBuildEnabled = Boolean(enabled);
+    updateAutoBuildToggleButton();
+
+    if (autoBuildEnabled) {
+      runAutoBuildTick();
+      startAutoBuildTimer();
+    } else {
+      stopAutoBuildTimer();
+    }
+  }
+
+  function toggleAutoBuildEnabled() {
+    setAutoBuildEnabled(!autoBuildEnabled);
+  }
+
+  function cycleAutoBuildMode() {
+    setAutoBuildMode(cycleAutoMode(autoBuildMode, AUTO_BUILD_SELECT_MODES));
+  }
+
+  function removeLegacyAutoModeButtons() {
+    const legacyButtonIds = [
+      "cor-cottage-mode-btn",
+      "cor-farming-mode-btn",
+      "cor-auto-build-btn",
+      "cor-auto-job-btn"
+    ];
+
+    for (let index = 0; index < legacyButtonIds.length; index += 1) {
+      const legacyButton = document.getElementById(legacyButtonIds[index]);
+
+      if (legacyButton) {
+        legacyButton.remove();
+      }
+    }
   }
 
   function ensureAfKControlsContainer() {
@@ -594,6 +1062,7 @@
       return null;
     }
 
+    removeLegacyAutoModeButtons();
     ensureAfKModeStyles();
 
     let controls = document.getElementById(AFK_CONTROLS_ID);
@@ -649,21 +1118,45 @@
       ".cor-afk-mode-btn:hover {",
       "  background: #4a4032;",
       "}",
-      "#" + COTTAGE_MODE_BUTTON_ID + ".cor-cottage-on {",
+      ".cor-auto-row {",
+      "  display: flex !important;",
+      "  align-items: center;",
+      "  gap: 4px;",
+      "  pointer-events: auto;",
+      "}",
+      ".cor-auto-mode-btn {",
+      "  display: inline-flex;",
+      "  align-items: center;",
+      "  gap: 5px;",
+      "  min-width: 64px;",
+      "}",
+      ".cor-auto-toggle-btn {",
+      "  min-width: 42px;",
+      "}",
+      "#" + AUTO_BUILD_TOGGLE_BUTTON_ID + ".cor-auto-build-toggle-on {",
       "  background: #2d6a4f;",
       "  border-color: #1b4332;",
       "  color: #ffffff;",
       "}",
-      "#" + COTTAGE_MODE_BUTTON_ID + ".cor-cottage-on:hover {",
+      "#" + AUTO_BUILD_TOGGLE_BUTTON_ID + ".cor-auto-build-toggle-on:hover {",
       "  background: #40916c;",
       "}",
-      "#" + FARMING_MODE_BUTTON_ID + ".cor-farming-on {",
+      "#" + AUTO_JOB_TOGGLE_BUTTON_ID + ".cor-auto-job-toggle-on {",
       "  background: #7f4f24;",
       "  border-color: #603814;",
       "  color: #ffffff;",
       "}",
-      "#" + FARMING_MODE_BUTTON_ID + ".cor-farming-on:hover {",
+      "#" + AUTO_JOB_TOGGLE_BUTTON_ID + ".cor-auto-job-toggle-on:hover {",
       "  background: #9a6b3f;",
+      "}",
+      ".cor-auto-mode-icon {",
+      "  width: 16px;",
+      "  height: 16px;",
+      "  object-fit: contain;",
+      "  flex: 0 0 auto;",
+      "}",
+      ".cor-auto-mode-label {",
+      "  line-height: 1;",
       "}",
       "#" + DUMMY_PANEL_ID + " {",
       "  display: flex !important;",
@@ -699,69 +1192,151 @@
     document.head.appendChild(style);
   }
 
-  function ensureCottageModeButton() {
+  function ensureAutoBuildControls() {
     const controls = ensureAfKControlsContainer();
 
     if (!controls) {
       return null;
     }
 
-    let button = document.getElementById(COTTAGE_MODE_BUTTON_ID);
+    let row = document.getElementById(AUTO_BUILD_ROW_ID);
 
-    if (button) {
-      if (button.parentElement !== controls) {
-        controls.appendChild(button);
-      }
+    if (!row) {
+      row = document.createElement("div");
+      row.id = AUTO_BUILD_ROW_ID;
+      row.className = "cor-auto-row";
 
-      updateCottageModeButton();
-      return button;
+      const modeButton = document.createElement("button");
+      modeButton.id = AUTO_BUILD_MODE_BUTTON_ID;
+      modeButton.type = "button";
+      modeButton.className = "cor-afk-mode-btn cor-auto-mode-btn";
+      modeButton.addEventListener("click", cycleAutoBuildMode);
+      row.appendChild(modeButton);
+
+      const toggleButton = document.createElement("button");
+      toggleButton.id = AUTO_BUILD_TOGGLE_BUTTON_ID;
+      toggleButton.type = "button";
+      toggleButton.className = "cor-afk-mode-btn cor-auto-toggle-btn";
+      toggleButton.addEventListener("click", toggleAutoBuildEnabled);
+      row.appendChild(toggleButton);
+
+      controls.appendChild(row);
+      window[PATCH_FLAG].autoBuild = true;
+    } else if (row.parentElement !== controls) {
+      controls.appendChild(row);
     }
 
-    button = document.createElement("button");
-    button.id = COTTAGE_MODE_BUTTON_ID;
-    button.type = "button";
-    button.className = "cor-afk-mode-btn";
-    button.title = "Cottage mode: keep every builder busy by upgrading the lowest cottage";
-    button.addEventListener("click", toggleCottageMode);
+    updateAutoBuildModeButton();
+    updateAutoBuildToggleButton();
 
-    controls.appendChild(button);
-    updateCottageModeButton();
-    window[PATCH_FLAG].cottageMode = true;
-
-    return button;
+    return row;
   }
 
-  function isGameFrameReadyForCottageMode() {
-    const gate = { reason: cottageModeGateReason };
+  function isGameFrameReadyForAutoBuild() {
+    const gate = { reason: autoBuildGateReason };
 
     if (!isGameFrameReadyForAfKMode(gate)) {
-      cottageModeGateReason = gate.reason;
+      autoBuildGateReason = gate.reason;
       return false;
     }
 
     if (!getBuildingController()) {
-      cottageModeGateReason = "loading controllers";
+      autoBuildGateReason = "loading controllers";
       return false;
     }
 
-    cottageModeGateReason = "";
+    autoBuildGateReason = "";
     return true;
   }
 
-  function getFarmBuilding(castle) {
+  function getProductionBuilding(castle, buildingTypeId) {
+    if (!castle || !castle.buildingManager || buildingTypeId == null) {
+      return null;
+    }
+
+    const building = castle.buildingManager.getUniqueBuildingByType(buildingTypeId);
+
+    if (!building || toInt(building.level) < 1) {
+      return null;
+    }
+
+    return building;
+  }
+
+  function getAutoJobModeConfig(mode) {
+    return AUTO_JOB_MODE_CONFIG[mode] || null;
+  }
+
+  function getAutoJobBuildingTypeId(mode) {
+    const config = getAutoJobModeConfig(mode);
     const BuildingConstant = getBuildingConstant();
 
-    if (!castle || !castle.buildingManager || !BuildingConstant) {
+    if (!config || !BuildingConstant) {
       return null;
     }
 
-    const farm = castle.buildingManager.getUniqueBuildingByType(BuildingConstant.TYPE_FARM);
+    return BuildingConstant[config.buildingTypeProp];
+  }
 
-    if (!farm || toInt(farm.level) < 1) {
+  function getAutoJobWorkerType(mode) {
+    const config = getAutoJobModeConfig(mode);
+    const WorkerConstant = getWorkerConstant();
+
+    if (!config || !config.workerTypeProp || !WorkerConstant) {
       return null;
     }
 
-    return farm;
+    return WorkerConstant[config.workerTypeProp];
+  }
+
+  function getCastleAssignedWorkerCount(castle, resourceWorkerKey) {
+    const resourceManager = castle && castle.resourceManager;
+    const resource = resourceManager && resourceWorkerKey && resourceManager[resourceWorkerKey];
+
+    return toInt(resource && resource.worker);
+  }
+
+  function findLowestWorkerProductionSlot(castle) {
+    let bestSlot = null;
+
+    for (let index = 0; index < AUTO_PRODUCTION_JOB_MODES.length; index += 1) {
+      const mode = AUTO_PRODUCTION_JOB_MODES[index];
+      const config = getAutoJobModeConfig(mode);
+      const buildingTypeId = getAutoJobBuildingTypeId(mode);
+      const workerType = getAutoJobWorkerType(mode);
+      const building = getProductionBuilding(castle, buildingTypeId);
+
+      if (!config || !building || workerType == null) {
+        continue;
+      }
+
+      const trainCount = calcMaxWorkerTrainCount(building, workerType, castle);
+
+      if (trainCount <= 0) {
+        continue;
+      }
+
+      const workerCount = getCastleAssignedWorkerCount(castle, config.resourceWorkerKey);
+
+      if (
+        !bestSlot
+        || workerCount < bestSlot.workerCount
+        || (
+          workerCount === bestSlot.workerCount
+          && toInt(building.level) < toInt(bestSlot.building.level)
+        )
+      ) {
+        bestSlot = {
+          building: building,
+          workerType: workerType,
+          count: trainCount,
+          workerCount: workerCount,
+          mode: mode
+        };
+      }
+    }
+
+    return bestSlot;
   }
 
   function isCastleWorkerQueueEmpty(castle) {
@@ -774,65 +1349,84 @@
     return manager.workerTrainningBean == null;
   }
 
-  function calcMaxFarmerTrainCount(farm) {
-    const WorkerConstant = getWorkerConstant();
+  function calcMaxWorkerTrainCount(building, workerType, castle) {
     const GameRuleHelper = getGameRuleHelper();
-    const ProduceResourceData = getProduceResourceDataClass();
 
-    if (!WorkerConstant || !GameRuleHelper || !farm) {
+    if (!GameRuleHelper || !building || !castle || workerType == null) {
       return 0;
     }
 
-    const farmerType = WorkerConstant.FARMER_WORKER_TYPE;
-    const buildingRule = GameRuleHelper.getBuildingRule(farm.typeId, farm.level);
-    const workerRule = GameRuleHelper.getWorkerRule(farmerType);
+    const buildingRule = GameRuleHelper.getBuildingRule(building.typeId, building.level);
+    const workerRule = GameRuleHelper.getWorkerRule(workerType);
 
     if (!buildingRule || !workerRule) {
       return 0;
     }
 
-    let ruleResult = null;
+    let ruleCheckResult = null;
 
     if (typeof workerRule.check === "function") {
-      ruleResult = workerRule.check(farm);
+      ruleCheckResult = workerRule.check(building);
+    }
 
-      if (ruleResult && ruleResult.isMatch === false) {
+    if (!ruleCheckResult) {
+      return 0;
+    }
+
+    const maxByResources = calcMaxAffordableCountFromRuleCheck(ruleCheckResult, castle);
+
+    if (maxByResources <= 0) {
+      return 0;
+    }
+
+    let maxByPopulation = Number.POSITIVE_INFINITY;
+    const populationPerWorker = toInt(workerRule.population);
+    const resourceManager = castle.resourceManager;
+
+    if (populationPerWorker > 0 && resourceManager) {
+      const populationPool = Math.max(
+        0,
+        toInt(resourceManager.freePopulation)
+      );
+
+      if (populationPool <= 0) {
         return 0;
       }
+
+      maxByPopulation = Math.floor(populationPool / populationPerWorker);
     }
 
-    if (!ProduceResourceData) {
-      return Math.max(0, toInt(buildingRule.buff1));
-    }
+    const slotCap = toInt(buildingRule.buff1);
 
-    const produceResourceData = new ProduceResourceData();
-
-    if (ruleResult) {
-      produceResourceData.ruleResult = ruleResult;
-    } else if (typeof workerRule.check === "function") {
-      produceResourceData.ruleResult = workerRule.check(farm);
-    }
-
-    const maxTrainningNum = toInt(
-      produceResourceData.calcMaxWorkerTrainning(workerRule, buildingRule)
-    );
-
-    return Math.max(0, Math.min(toInt(buildingRule.buff1), maxTrainningNum));
+    return Math.max(0, Math.min(maxByResources, maxByPopulation, slotCap));
   }
 
-  function requestFarmerTraining(castle, farm, count) {
-    const WorkerConstant = getWorkerConstant();
-    const farmerType = WorkerConstant && WorkerConstant.FARMER_WORKER_TYPE;
+  function canTrainWorkers(building, workerType, castle, count) {
+    const trainCount = toInt(count);
 
-    if (!castle || !farm || farmerType == null || count <= 0) {
+    if (trainCount <= 0) {
       return false;
     }
 
-    if (typeof farm.trainningWorker === "function") {
-      farm.trainningWorker(farmerType, count);
+    const affordableCount = calcMaxWorkerTrainCount(building, workerType, castle);
 
-      if (farmingModeEnabled) {
-        window.setTimeout(runFarmingModeTick, FARMING_MODE_RETRY_MS);
+    return affordableCount >= trainCount;
+  }
+
+  function requestWorkerTraining(castle, building, workerType, count) {
+    if (!castle || !building || workerType == null || count <= 0) {
+      return false;
+    }
+
+    if (!canTrainWorkers(building, workerType, castle, count)) {
+      return false;
+    }
+
+    if (typeof building.trainningWorker === "function") {
+      building.trainningWorker(workerType, count);
+
+      if (autoJobEnabled) {
+        window.setTimeout(runAutoJobTick, AUTO_JOB_RETRY_MS);
       }
 
       return true;
@@ -851,11 +1445,11 @@
 
     workerController.trainningWorker(
       cityId,
-      farmerType,
+      workerType,
       count,
-      function farmingModeTrainCallback() {
-        if (farmingModeEnabled) {
-          window.setTimeout(runFarmingModeTick, FARMING_MODE_RETRY_MS);
+      function autoJobTrainCallback() {
+        if (autoJobEnabled) {
+          window.setTimeout(runAutoJobTick, AUTO_JOB_RETRY_MS);
         }
       },
       true
@@ -864,27 +1458,63 @@
     return true;
   }
 
-  function listFarmingCandidates() {
+  function listAutoJobCandidates() {
     const player = getPlayerObj();
 
-    if (!player) {
+    if (!player || !autoJobEnabled) {
       return [];
     }
 
     const candidates = [];
 
-    forEachCastle(player, function collectFarmingCandidate(castle) {
+    if (autoJobMode === "lowest") {
+      forEachCastle(player, function collectLowestJobCandidate(castle) {
+        if (!castle || !isCastleWorkerQueueEmpty(castle)) {
+          return;
+        }
+
+        const slot = findLowestWorkerProductionSlot(castle);
+
+        if (!slot) {
+          return;
+        }
+
+        candidates.push({
+          castle: castle,
+          building: slot.building,
+          workerType: slot.workerType,
+          cityId: toInt(castle.cityId),
+          count: slot.count,
+          workerCount: slot.workerCount
+        });
+      });
+
+      candidates.sort(function sortByLowestWorkerCount(left, right) {
+        return left.workerCount - right.workerCount;
+      });
+
+      return candidates;
+    }
+
+    const buildingTypeId = getAutoJobBuildingTypeId(autoJobMode);
+    const workerType = getAutoJobWorkerType(autoJobMode);
+
+    if (buildingTypeId == null || workerType == null) {
+      return [];
+    }
+
+    forEachCastle(player, function collectJobCandidate(castle) {
       if (!castle || !isCastleWorkerQueueEmpty(castle)) {
         return;
       }
 
-      const farm = getFarmBuilding(castle);
+      const building = getProductionBuilding(castle, buildingTypeId);
 
-      if (!farm) {
+      if (!building) {
         return;
       }
 
-      const count = calcMaxFarmerTrainCount(farm);
+      const count = calcMaxWorkerTrainCount(building, workerType, castle);
 
       if (count <= 0) {
         return;
@@ -892,7 +1522,8 @@
 
       candidates.push({
         castle: castle,
-        farm: farm,
+        building: building,
+        workerType: workerType,
         cityId: toInt(castle.cityId),
         count: count
       });
@@ -901,28 +1532,24 @@
     return candidates;
   }
 
-  function updateFarmingModeButton() {
-    updateAfKModeButton(FARMING_MODE_BUTTON_ID, farmingModeEnabled, "cor-farming-on");
-  }
-
-  function stopFarmingModeTimer() {
-    if (farmingModeTimerId !== null) {
-      window.clearInterval(farmingModeTimerId);
-      farmingModeTimerId = null;
+  function stopAutoJobTimer() {
+    if (autoJobTimerId !== null) {
+      window.clearInterval(autoJobTimerId);
+      autoJobTimerId = null;
     }
   }
 
-  function startFarmingModeTimer() {
-    stopFarmingModeTimer();
-    farmingModeTimerId = window.setInterval(runFarmingModeTick, FARMING_MODE_INTERVAL_MS);
+  function startAutoJobTimer() {
+    stopAutoJobTimer();
+    autoJobTimerId = window.setInterval(runAutoJobTick, AUTO_JOB_INTERVAL_MS);
   }
 
-  function runFarmingModeTick() {
-    if (!farmingModeEnabled) {
+  function runAutoJobTick() {
+    if (!autoJobEnabled) {
       return;
     }
 
-    if (!isGameFrameReadyForFarmingMode()) {
+    if (!isGameFrameReadyForAutoJob()) {
       return;
     }
 
@@ -930,57 +1557,80 @@
       return;
     }
 
-    const candidates = listFarmingCandidates();
+    const candidates = listAutoJobCandidates();
 
     if (candidates.length === 0) {
       return;
     }
 
-    requestFarmerTraining(candidates[0].castle, candidates[0].farm, candidates[0].count);
+    const candidate = candidates[0];
+    requestWorkerTraining(
+      candidate.castle,
+      candidate.building,
+      candidate.workerType,
+      candidate.count
+    );
   }
 
-  function setFarmingModeEnabled(enabled) {
-    farmingModeEnabled = Boolean(enabled);
-    updateFarmingModeButton();
+  function setAutoJobMode(mode) {
+    if (AUTO_JOB_SELECT_MODES.indexOf(mode) < 0) {
+      return;
+    }
 
-    if (farmingModeEnabled) {
-      runFarmingModeTick();
-      startFarmingModeTimer();
-    } else {
-      stopFarmingModeTimer();
+    autoJobMode = mode;
+    updateAutoJobModeButton();
+
+    if (autoJobEnabled) {
+      runAutoJobTick();
     }
   }
 
-  function toggleFarmingMode() {
-    setFarmingModeEnabled(!farmingModeEnabled);
+  function setAutoJobEnabled(enabled) {
+    autoJobEnabled = Boolean(enabled);
+    updateAutoJobToggleButton();
+
+    if (autoJobEnabled) {
+      runAutoJobTick();
+      startAutoJobTimer();
+    } else {
+      stopAutoJobTimer();
+    }
+  }
+
+  function toggleAutoJobEnabled() {
+    setAutoJobEnabled(!autoJobEnabled);
+  }
+
+  function cycleAutoJobMode() {
+    setAutoJobMode(cycleAutoMode(autoJobMode, AUTO_JOB_SELECT_MODES));
   }
 
   function suspendAfKModesForWebGLRecovery() {
-    if (cottageModeEnabled && cottageModeTimerId !== null) {
-      webglRecoverySuspendedCottage = true;
-      stopCottageModeTimer();
+    if (autoBuildEnabled && autoBuildTimerId !== null) {
+      webglRecoverySuspendedAutoBuild = true;
+      stopAutoBuildTimer();
     }
 
-    if (farmingModeEnabled && farmingModeTimerId !== null) {
-      webglRecoverySuspendedFarming = true;
-      stopFarmingModeTimer();
+    if (autoJobEnabled && autoJobTimerId !== null) {
+      webglRecoverySuspendedAutoJob = true;
+      stopAutoJobTimer();
     }
   }
 
   function resumeAfKModesAfterWebGLRecovery() {
-    if (webglRecoverySuspendedCottage) {
-      webglRecoverySuspendedCottage = false;
+    if (webglRecoverySuspendedAutoBuild) {
+      webglRecoverySuspendedAutoBuild = false;
 
-      if (cottageModeEnabled) {
-        startCottageModeTimer();
+      if (autoBuildEnabled) {
+        startAutoBuildTimer();
       }
     }
 
-    if (webglRecoverySuspendedFarming) {
-      webglRecoverySuspendedFarming = false;
+    if (webglRecoverySuspendedAutoJob) {
+      webglRecoverySuspendedAutoJob = false;
 
-      if (farmingModeEnabled) {
-        startFarmingModeTimer();
+      if (autoJobEnabled) {
+        startAutoJobTimer();
       }
     }
   }
@@ -1169,52 +1819,67 @@
     return true;
   }
 
-  function ensureFarmingModeButton() {
+  function ensureAutoJobControls() {
     const controls = ensureAfKControlsContainer();
 
     if (!controls) {
       return null;
     }
 
-    let button = document.getElementById(FARMING_MODE_BUTTON_ID);
+    let row = document.getElementById(AUTO_JOB_ROW_ID);
 
-    if (button) {
-      if (button.parentElement !== controls) {
-        controls.appendChild(button);
+    if (!row) {
+      row = document.createElement("div");
+      row.id = AUTO_JOB_ROW_ID;
+      row.className = "cor-auto-row";
+
+      const modeButton = document.createElement("button");
+      modeButton.id = AUTO_JOB_MODE_BUTTON_ID;
+      modeButton.type = "button";
+      modeButton.className = "cor-afk-mode-btn cor-auto-mode-btn";
+      modeButton.addEventListener("click", cycleAutoJobMode);
+      row.appendChild(modeButton);
+
+      const toggleButton = document.createElement("button");
+      toggleButton.id = AUTO_JOB_TOGGLE_BUTTON_ID;
+      toggleButton.type = "button";
+      toggleButton.className = "cor-afk-mode-btn cor-auto-toggle-btn";
+      toggleButton.addEventListener("click", toggleAutoJobEnabled);
+      row.appendChild(toggleButton);
+
+      const buildRow = document.getElementById(AUTO_BUILD_ROW_ID);
+
+      if (buildRow && buildRow.nextSibling) {
+        controls.insertBefore(row, buildRow.nextSibling);
+      } else {
+        controls.appendChild(row);
       }
 
-      updateFarmingModeButton();
-      return button;
+      window[PATCH_FLAG].autoJob = true;
+    } else if (row.parentElement !== controls) {
+      controls.appendChild(row);
     }
 
-    button = document.createElement("button");
-    button.id = FARMING_MODE_BUTTON_ID;
-    button.type = "button";
-    button.className = "cor-afk-mode-btn";
-    button.title = "Farming mode: fill empty worker job queues with max farmer training";
-    button.addEventListener("click", toggleFarmingMode);
+    updateAutoJobModeButton();
+    updateAutoJobToggleButton();
 
-    controls.appendChild(button);
-    updateFarmingModeButton();
-    window[PATCH_FLAG].farmingMode = true;
-
-    return button;
+    return row;
   }
 
-  function isGameFrameReadyForFarmingMode() {
-    const gate = { reason: farmingModeGateReason };
+  function isGameFrameReadyForAutoJob() {
+    const gate = { reason: autoJobGateReason };
 
     if (!isGameFrameReadyForAfKMode(gate)) {
-      farmingModeGateReason = gate.reason;
+      autoJobGateReason = gate.reason;
       return false;
     }
 
     if (!getWorkerController()) {
-      farmingModeGateReason = "loading controllers";
+      autoJobGateReason = "loading controllers";
       return false;
     }
 
-    farmingModeGateReason = "";
+    autoJobGateReason = "";
     return true;
   }
 
@@ -1625,8 +2290,8 @@
     return panel;
   }
 
-  ensureCottageModeButton();
-  ensureFarmingModeButton();
+  ensureAutoBuildControls();
+  ensureAutoJobControls();
   ensureDummyPanel();
 
   window.setInterval(function keepAfKModeButtonsVisible() {
@@ -1635,8 +2300,8 @@
     }
 
     installWebGLContextRecovery();
-    ensureCottageModeButton();
-    ensureFarmingModeButton();
+    ensureAutoBuildControls();
+    ensureAutoJobControls();
     ensureDummyPanel();
   }, 3000);
 
@@ -2813,7 +3478,8 @@
     }
 
     installWebGLContextRecovery();
-    ensureCottageModeButton();
+    ensureAutoBuildControls();
+    ensureAutoJobControls();
 
     const citySpritesPatched = patchWorldMapCitySprites();
     const arenaCleanupPatched = patchArenaReminderCleanup();

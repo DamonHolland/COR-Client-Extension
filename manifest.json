@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Call of Roma Client Fixes",
-  "version": "1.8.0",
-  "description": "Fixes Call of Roma UI bugs, removes the external recharge ad, makes server-confirmed wilderness clearings open as wilds, adds cottage and farming AFK modes, and recovers from WebGL context loss.",
+  "version": "1.9.7",
+  "description": "Fixes Call of Roma UI bugs, removes the external recharge ad, makes server-confirmed wilderness clearings open as wilds, adds Auto-Build and Auto-Job modes, and recovers from WebGL context loss.",
   "action": {
     "default_title": "Call of Roma Client Fixes"
   },
